@@ -1,0 +1,39 @@
+{
+  "ternary": {
+    "arch": [
+      784,
+      32,
+      10
+    ],
+    "params": 25450,
+    "val": 94.26,
+    "w1_weights": 25088,
+    "w2_weights": 330,
+    "zero_density": 0.658601701259613,
+    "entropy": 1.1218531645493748,
+    "w1_entropy": 0.9261504997016904,
+    "macs": 25408,
+    "multipliers": 0,
+    "mnist": 93.55,
+    "hand": 84.75,
+    "font": 83.33333333333333
+  },
+  "float": {
+    "arch": [
+      784,
+      256,
+      10
+    ],
+    "params": 203530,
+    "val": 98.24000000000001,
+    "w1_weights": 200704,
+    "w2_weights": 2570,
+    "zero_density": 0.0,
+    "entropy": null,
+    "macs": 203264,
+    "multipliers": 203530,
+    "mnist": 96.95,
+    "hand": 80.5,
+    "font": 91.11111111111111
+  }
+}
