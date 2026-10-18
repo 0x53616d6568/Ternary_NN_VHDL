@@ -128,7 +128,8 @@ begin
       N_HIDDEN     => N_HIDDEN,
       ACC_WIDTH    => ACC_WIDTH,
       HIDDEN_WIDTH => HIDDEN_WIDTH,
-      X_WIDTH      => X_WIDTH
+      X_WIDTH      => X_WIDTH,
+      BIASES       => B1_INIT
     )
     port map (
       clk         => clk,
@@ -138,7 +139,6 @@ begin
       w_read_addr => w_addr,
       w_read_data => w_data,
       x           => x_bus,
-      bias        => B1_INIT,
       hidden      => hidden
     );
 

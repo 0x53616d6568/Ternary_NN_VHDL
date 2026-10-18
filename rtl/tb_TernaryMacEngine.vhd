@@ -89,7 +89,11 @@ begin
       ACC_WIDTH    => ACC_WIDTH,
       HIDDEN_WIDTH => HIDDEN_WIDTH,
       X_WIDTH      => X_WIDTH,
-      ADDR_WIDTH   => ADDR_WIDTH
+      ADDR_WIDTH   => ADDR_WIDTH,
+      -- The bias moved from a port to a generic when TernaryMacEngine was
+      -- decomposed into NeuronLayer/TernaryNeuron, so the engine carries no
+      -- package dependency and can be instantiated at any depth.
+      BIASES       => BIAS
     )
     port map (
       clk         => clk,
@@ -99,7 +103,6 @@ begin
       w_read_addr => waddr,
       w_read_data => w_data,
       x           => x,
-      bias         => bias_s,
       hidden      => hidden
     );
 
