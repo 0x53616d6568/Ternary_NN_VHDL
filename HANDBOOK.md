@@ -180,7 +180,7 @@ feature (see Â§8).
 ### Checkpoints in `model/`
 
 The inventory lists only the deployed model. Four further checkpoints are also
-present and are referenced by name in Section 10 as the evidence for the
+present and are referenced by name in Section 11 as the evidence for the
 rejected approaches; they are listed there rather than here.
 
 | file | architecture | val | status |
@@ -210,7 +210,114 @@ and this document does not claim it does â€” it wins on area, latency and e
 
 ---
 
-## 7. Why it is fast, small and multiplier-free
+## 7. Dataflow description
+
+This is the canonical description of the architecture. Everything below is the
+design as built — the VHDL in `rtl/` is a transcription of these equations, not
+the other way round.
+
+### Notation
+
+```
+x[k]           input value, index k
+Σ              summation
+H(i,k)         = (−1)^popcount(i AND k)     Sylvester–Hadamard sign, ±1
+T(·)           ternary decode of a 2-bit weight word
+Clamp(v,L,U)   = [v>U]?U : ([v<L]?L : v)
+A[h][k]        accumulator of hidden unit h after k input passes
+```
+
+### The complete forward propagation
+
+```
+ ── input ────────────────────────────────────────────────────
+      x[p]  = binary pixel, p = 0…783
+      start = (p = 0)                             write to addr 0
+
+ ── A. rotate ────────────────────────────────────────────────
+      y[i] = ( Σ H(i mod 8, k) · x[8·⌊i/8⌋ + k] ) >>> 1
+                   k=0
+
+ ── B. first layer — THE SEQUENTIAL MAC ──────────────────────
+      Δ[h][k] = T( W[k][h] ) · y[k]              h = 0…31
+      A[h][0]   = B[h]                          bias seed
+      A[h][k+1] = A[h][k] + Δ[h][k]              accumulate freely
+      hidden[h] = Clamp( A[h][783], 0, 127 )     final cycle only
+
+ ── C. second layer — COMBINATIONAL ──────────────────────────
+      scores[d] = B2[d] + Σ A[h] · W2[d][h]      d = 0…9
+
+ ── D. classify ──────────────────────────────────────────────
+      Class_id = argmax over d of scores[d]
+
+ ── E. display ───────────────────────────────────────────────
+      segments = (scan = 0) ? 0x7F & pattern[Class_id] : 0xFF
+      anodes   = (scan = 0) ? 0xE : 0xF
+```
+
+### The ternary decode
+
+```
+      T(00) =  0
+      T(01) = +1
+      T(11) = −1
+      T(10) = undefined, never emitted
+
+      in logic:  T(w) = [w = 01]?1 : [w = 11]?(−1) : 0
+```
+
+Two-bit two's complement encodes {0, +1, −1} with no decoder logic. `T(10)`
+would decode as −2 and is never produced by the exporter.
+
+### Why the multiply disappears
+
+Because `T(·) ∈ {0, +1, −1}`, the product `T(W)·y` is always one of three
+things:
+
+| T(W) | operation | hardware |
+|---|---|---|
+| 0 | mask to zero | a wire |
+| +1 | pass through | a wire |
+| −1 | two's complement negate | invert + increment |
+
+No partial-product array, no Wallace tree. **This is the entire mechanism** —
+not "negation is free", but "there is nothing to multiply".
+
+The ±1 case *is* a genuine invert-plus-increment: `y` is signed (measured range
+−2 to +4), so `−y = ~y + 1`. The `+1` absorbs into the adder's carry-in.
+
+### Why the accumulator must run free
+
+```
+      k = 0…782:   A[h][k+1] = A[h][k] + Δ[h][k]        ← no clamp
+      k = 783:     hidden[h] = Clamp(A[h][783], 0, 127)  ← clamp once
+```
+
+Clamping every cycle truncates intermediate partial sums and gives **wrong
+answers**. This is the single most important correctness property in the design
+and it was a real defect class during verification.
+
+### Where each block sits
+
+| equation | cycles | block | class |
+|---|---|---|---|
+| A. rotate | 784, **overlapped** | `WalshHadamard` | streaming combinational |
+| B. MAC | **784** | `TernaryMacEngine` | **sequential dataflow** |
+| C. output | 0 | `DenseLayer` | combinational |
+| D. argmax | 0 | `ArgMax` | combinational |
+| E. display | 0 | `SevenSegmentDisplay` | combinational + scan counter |
+
+Total **1,569 cycles = 15.69 µs** at 100 MHz.
+
+**Stage B is sequential dataflow and must stay that way.** A fully combinational
+form of the same equations would need 22 chained adder levels (~78 ns) and
+~418,000 LUTs — 26× over the device's 15,850. The 784-cycle sequential loop is
+what makes the design exist at all; it is not an optimisation that could be
+traded away for latency.
+
+---
+
+## 8. Why it is fast, small and multiplier-free
 
 Four ideas borrowed from Bonsai 27B / BitNet b1.58:
 
@@ -233,7 +340,7 @@ W2/B2 are scaled by one positive constant, which leaves ArgMax unchanged.
 
 ---
 
-## 8. Hardware architecture
+## 9. Hardware architecture
 
 | | |
 |---|---|
@@ -271,7 +378,7 @@ augmentation is dialled to the right width (Â§5).
 
 ---
 
-## 9. Verification status
+## 10. Verification status
 
 | check | result |
 |---|---|
@@ -307,7 +414,7 @@ coverage is narrower than the end-to-end figure.
 
 ---
 
-## 10. What was tried and rejected
+## 11. What was tried and rejected
 
 Recorded so it is not re-attempted.
 
@@ -326,7 +433,7 @@ Recorded so it is not re-attempted.
 
 ---
 
-## 11. Known limits
+## 12. Known limits
 
 1. **Fonts at 83.3%** against the float reference's 91.1%. A font glyph is a
    uniform 6px stroke; MNIST tapers 1â†’6px and that taper is a feature. Thinning
@@ -343,7 +450,7 @@ Recorded so it is not re-attempted.
 
 ---
 
-## 12. File map
+## 13. File map
 
 ```
 verified architecture/
@@ -374,7 +481,7 @@ verified architecture/
 
 ---
 
-## 13. Project constraints
+## 14. Project constraints
 
 - **Maximum 16 units per hidden layer** â€” *superseded; the deployed model uses
   32. Recorded here because it was an original constraint, not because it still
