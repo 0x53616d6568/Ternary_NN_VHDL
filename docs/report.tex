@@ -745,6 +745,24 @@ on-board oscillator. It contains no algorithmic logic.
 \end{tabularx}
 \end{center}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 10mm]
+  \node[draw,fill=gray!14,align=center] (board) {\texttt{Nexys3Top}\\top level};
+  \node[draw] (clk) [left=of board] {100 MHz};
+  \node[draw] (rx) [left=of clk] {RsRx};
+  \node[draw] (seg) [right=of board] {seg (7)};
+  \node[draw] (an) [right=of seg] {an (4)};
+  \draw[->] (rx) -- (board);
+  \draw[->] (clk) -- (board);
+  \draw[->] (board) -- (seg);
+  \draw[->] (seg) -- (an);
+\end{tikzpicture}
+\caption{Nexys3Top block diagram.}
+\label{fig:nexys3top}
+\end{figure}
+
 \subsubsection{\texttt{UARTReceiver.vhd}}
 \label{sub:uart}
 
@@ -764,6 +782,24 @@ assembles \texttt{data\_out} and pulses \texttt{data\_valid}.
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 10mm]
+  \node[draw,fill=orange!14,align=center] (uart) {\texttt{UARTReceiver}};
+  \node[draw] (clk) [left=of uart] {clk};
+  \node[draw] (rx) [left=of clk] {serial\_in (1)};
+  \node[draw] (dout) [right=of uart] {data\_out (8)};
+  \node[draw] (dvalid) [right=of dout] {data\_valid (1)};
+  \draw[->] (rx) -- (uart);
+  \draw[->] (clk) -- (uart);
+  \draw[->] (uart) -- (dout);
+  \draw[->] (uart) -- (dvalid);
+\end{tikzpicture}
+\caption{UARTReceiver block diagram.}
+\label{fig:uart}
+\end{figure}
 
 \subsubsection{\texttt{ImagePacketReceiver.vhd}}
 \label{sub:pkt}
@@ -790,6 +826,30 @@ significant bit first, and driving \texttt{pixel\_we}, \texttt{pixel\_addr} and
 \end{tabularx}
 \end{center}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 10mm]
+  \node[draw,fill=orange!10,align=center] (pkt) {\texttt{ImagePacketReceiver}};
+  \node[draw] (clk) [left=of pkt] {clk};
+  \node[draw] (bytein) [left=of clk] {byte\_in (8)};
+  \node[draw] (bvalid) [left=of bytein] {byte\_valid (1)};
+  \node[draw] (we) [right=of pkt] {pixel\_we (1)};
+  \node[draw] (addr) [right=of we] {pixel\_addr (10)};
+  \node[draw] (data) [right=of addr] {pixel\_data (1)};
+  \node[draw] (done) [right=of data] {image\_done (1)};
+  \draw[->] (bytein) -- (pkt);
+  \draw[->] (clk) -- (pkt);
+  \draw[->] (bvalid) -- (pkt);
+  \draw[->] (pkt) -- (we);
+  \draw[->] (pkt) -- (addr);
+  \draw[->] (pkt) -- (data);
+  \draw[->] (pkt) -- (done);
+\end{tikzpicture}
+\caption{ImagePacketReceiver block diagram.}
+\label{fig:pkt}
+\end{figure}
+
 \subsubsection{\texttt{SevenSegmentDisplay.vhd}}
 \label{sub:seg}
 
@@ -810,6 +870,24 @@ segment pattern.
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 10mm]
+  \node[draw,fill=orange!6,align=center] (seg) {\texttt{SevenSegmentDisplay}};
+  \node[draw] (clk) [left=of seg] {clk};
+  \node[draw] (digit) [left=of clk] {digit (4)};
+  \node[draw] (segments) [right=of seg] {segments (8)};
+  \node[draw] (anodes) [right=of segments] {anodes (4)};
+  \draw[->] (digit) -- (seg);
+  \draw[->] (clk) -- (seg);
+  \draw[->] (seg) -- (segments);
+  \draw[->] (seg) -- (anodes);
+\end{tikzpicture}
+\caption{SevenSegmentDisplay block diagram.}
+\label{fig:seg}
+\end{figure}
 
 \subsection{The classifier datapath}
 \label{sec:classifier}
@@ -855,6 +933,26 @@ key generics are:
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=green!8,align=center] (nr) {\texttt{NumberRecognition}};
+  \node[draw] (clk) [left=of nr] {clk};
+  \node[draw] (we) [left=of clk] {pixel\_write\_enable (1)};
+  \node[draw] (addr) [left=of we] {pixel\_write\_addr (10)};
+  \node[draw] (data) [left=of addr] {pixel\_write\_data (1)};
+  \node[draw] (digit) [right=of nr] {digit (4)};
+  \draw[->] (we) -- (nr);
+  \draw[->] (clk) -- (nr);
+  \draw[->] (addr) -- (nr);
+  \draw[->] (data) -- (nr);
+  \draw[->] (nr) -- (digit);
+\end{tikzpicture}
+\caption{NumberRecognition block diagram.}
+\label{fig:numberrecognition}
+\end{figure}
 
 The FSM is deliberately minimal. The rotation runs concurrently with pixel
 reception, so when it reports completion only the MAC pass remains:
@@ -903,6 +1001,30 @@ emits the rotated bus with \texttt{out\_valid}.
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=blue!10,align=center] (wh) {\texttt{WalshHadamard}};
+  \node[draw] (clk) [left=of wh] {clk};
+  \node[draw] (start) [left=of clk] {start (1)};
+  \node[draw] (valid) [left=of start] {in\_valid (1)};
+  \node[draw] (idx) [left=of valid] {in\_index (10)};
+  \node[draw] (data) [left=of idx] {in\_data (1)};
+  \node[draw] (oval) [right=of wh] {out\_valid (1)};
+  \node[draw] (odata) [right=of oval] {out\_data (784$\times$4)};
+  \draw[->] (start) -- (wh);
+  \draw[->] (clk) -- (wh);
+  \draw[->] (valid) -- (wh);
+  \draw[->] (idx) -- (wh);
+  \draw[->] (data) -- (wh);
+  \draw[->] (wh) -- (oval);
+  \draw[->] (wh) -- (odata);
+\end{tikzpicture}
+\caption{WalshHadamard block diagram.}
+\label{fig:walsh}
+\end{figure}
 
 Figure~\ref{fig:butterfly} shows one block-8 butterfly.
 
@@ -1011,6 +1133,30 @@ neurons, so the same neuron can be reused at any depth.
 \end{tabularx}
 \end{center}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=green!8,align=center] (nl) {\texttt{NeuronLayer}};
+  \node[draw] (clk) [left=of nl] {clk};
+  \node[draw] (start) [left=of clk] {Start (1)};
+  \node[draw] (fc) [left=of start] {FinalCycle (1)};
+  \node[draw] (wd) [left=of fc] {WData (64)};
+  \node[draw] (x) [left=of wd] {X (4)};
+  \node[draw] (bias) [left=of x] {Biases (1024)};
+  \node[draw] (hid) [right=of nl] {Hidden (256)};
+  \draw[->] (start) -- (nl);
+  \draw[->] (clk) -- (nl);
+  \draw[->] (fc) -- (nl);
+  \draw[->] (wd) -- (nl);
+  \draw[->] (x) -- (nl);
+  \draw[->] (bias) -- (nl);
+  \draw[->] (nl) -- (hid);
+\end{tikzpicture}
+\caption{NeuronLayer block diagram.}
+\label{fig:neuronlayer}
+\end{figure}
+
 \subsubsection{\texttt{TernaryNeuron.vhd} --- one hidden unit}
 \label{sub:neuron}
 
@@ -1072,6 +1218,22 @@ The step that removes the multiplier from the datapath.
 \end{tabularx}
 \end{center}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=blue!8,align=center] (app) {\texttt{TernaryApply}};
+  \node[draw] (w) [left=of app] {W (2)};
+  \node[draw] (x) [left=of w] {X (R)};
+  \node[draw] (delta) [right=of app] {Delta (R)};
+  \draw[->] (w) -- (app);
+  \draw[->] (x) -- (app);
+  \draw[->] (app) -- (delta);
+\end{tikzpicture}
+\caption{TernaryApply block diagram.}
+\label{fig:apply}
+\end{figure}
+
 \textbf{Operation}: $T(00) = 0$, $T(01) = +1$, $T(11) = -1$, and $T(10)$
 is unreachable. The two-bit field is the sign and the ``is it one'' flag, so
 no decoder is needed: the select is the weight itself.
@@ -1098,6 +1260,26 @@ operator.
 \end{tabularx}
 \end{center}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=gray!14,align=center] (add) {\texttt{Adder}};
+  \node[draw] (a) [left=of add] {A (R)};
+  \node[draw] (b) [left=of a] {B (R)};
+  \node[draw] (cin) [left=of b] {Cin (1)};
+  \node[draw] (s) [right=of add] {S (R)};
+  \node[draw] (cout) [right=of s] {Cout (1)};
+  \draw[->] (a) -- (add);
+  \draw[->] (b) -- (add);
+  \draw[->] (cin) -- (add);
+  \draw[->] (add) -- (s);
+  \draw[->] (add) -- (cout);
+\end{tikzpicture}
+\caption{Adder block diagram.}
+\label{fig:adder}
+\end{figure}
+
 \subsubsection{\texttt{Accumulator.vhd} --- the accumulator}
 \label{sub:acc}
 
@@ -1119,6 +1301,30 @@ The sequential dataflow edge.
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=green!14,align=center] (acc) {\texttt{Accumulator}};
+  \node[draw] (clk) [left=of acc] {clk};
+  \node[draw] (load) [left=of clk] {Load (1)};
+  \node[draw] (lv) [left=of load] {LoadValue (R)};
+  \node[draw] (av) [left=of lv] {AddValue (R)};
+  \node[draw] (fc) [left=of av] {FinalCycle (1)};
+  \node[draw] (cl) [left=of fc] {Clamped (R)};
+  \node[draw] (reg) [right=of acc] {Reg (R)};
+  \draw[->] (load) -- (acc);
+  \draw[->] (clk) -- (acc);
+  \draw[->] (lv) -- (acc);
+  \draw[->] (av) -- (acc);
+  \draw[->] (fc) -- (acc);
+  \draw[->] (cl) -- (acc);
+  \draw[->] (acc) -- (reg);
+\end{tikzpicture}
+\caption{Accumulator block diagram.}
+\label{fig:acc}
+\end{figure}
 
 \textbf{Operation}:
 $\texttt{Load} = 1 \Rightarrow \texttt{Reg} \leftarrow \texttt{LoadValue}$,
@@ -1143,6 +1349,20 @@ saturation range is applied by the parent block.
 \end{tabularx}
 \end{center}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=orange!14,align=center] (relu) {\texttt{ReLU}};
+  \node[draw] (x) [left=of relu] {X (R)};
+  \node[draw] (y) [right=of relu] {Y (R)};
+  \draw[->] (x) -- (relu);
+  \draw[->] (relu) -- (y);
+\end{tikzpicture}
+\caption{ReLU block diagram.}
+\label{fig:relu}
+\end{figure}
+
 \subsubsection{\texttt{Saturate.vhd} --- ReLU plus saturation}
 \label{sub:saturate}
 
@@ -1159,6 +1379,20 @@ The integer activation. ReLU plus saturation to $[0, \texttt{HIDDEN\_MAX}]$.
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=orange!14,align=center] (sat) {\texttt{Saturate}};
+  \node[draw] (val) [left=of sat] {Value (R)};
+  \node[draw] (y) [right=of sat] {Y (R)};
+  \draw[->] (val) -- (sat);
+  \draw[->] (sat) -- (y);
+\end{tikzpicture}
+\caption{Saturate block diagram.}
+\label{fig:sat}
+\end{figure}
 
 \textbf{Operation}: negative $\Rightarrow 0$, greater than
 \texttt{MAX\_VALUE} $\Rightarrow$ \texttt{MAX\_VALUE}, else pass through.
@@ -1187,6 +1421,24 @@ acceptable because it accounts for 1.26\% of the weights.
 \end{tabularx}
 \end{center}
 
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=orange!8,align=center] (dl) {\texttt{DenseLayer}};
+  \node[draw] (a) [left=of dl] {A (N$\times$D)};
+  \node[draw] (w) [left=of a] {Weights (N$\times$M$\times$W)};
+  \node[draw] (b) [left=of w] {Biases (M$\times$A)};
+  \node[draw] (y) [right=of dl] {Y (M$\times$O)};
+  \draw[->] (a) -- (dl);
+  \draw[->] (w) -- (dl);
+  \draw[->] (b) -- (dl);
+  \draw[->] (dl) -- (y);
+\end{tikzpicture}
+\caption{DenseLayer block diagram.}
+\label{fig:denselayer}
+\end{figure}
+
 \subsection{\texttt{ArgMax.vhd} --- class selection}
 \label{sub:argmax}
 
@@ -1203,6 +1455,20 @@ Ten signed scores to a four-bit class index, fully combinational.
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=orange!8,align=center] (am) {\texttt{ArgMax}};
+  \node[draw] (scores) [left=of am] {Scores (10$\times$32)};
+  \node[draw] (cid) [right=of am] {Class\_id (4)};
+  \draw[->] (scores) -- (am);
+  \draw[->] (am) -- (cid);
+\end{tikzpicture}
+\caption{ArgMax block diagram.}
+\label{fig:argmax}
+\end{figure}
 
 \subsection{\texttt{ModelWeights.vhd} --- generated constants}
 \label{sub:modelweights}
@@ -1223,6 +1489,24 @@ Ten signed scores to a four-bit class index, fully combinational.
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
+  node distance=8mm and 8mm]
+  \node[draw,fill=gray!14,align=center] (mw) {\texttt{ModelWeights}\\package};
+  \node[draw] (w1) [left=of mw] {W1\_PACKED\_INIT (50176)};
+  \node[draw] (b1) [left=of w1] {B1\_INIT (1024)};
+  \node[draw] (w2) [right=of mw] {W2\_INIT (5120)};
+  \node[draw] (b2) [right=of w2] {B2\_INIT (320)};
+  \draw[->] (w1) -- (mw);
+  \draw[->] (b1) -- (mw);
+  \draw[->] (mw) -- (w2);
+  \draw[->] (mw) -- (b2);
+\end{tikzpicture}
+\caption{ModelWeights block diagram.}
+\label{fig:modelweights}
+\end{figure}
 
 This file is generated by \texttt{export\_vhdl\_model.py} and must not be edited
 by hand. Export is deterministic: re-running it reproduces a byte-identical file
