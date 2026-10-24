@@ -601,9 +601,38 @@ Throughput at 100 MHz & 3{,}934 img/s & 492 img/s \\
 \label{sec:vhdl}
 
 This section documents every VHDL source file in the design: what it does, its
-interface, and why it exists. Ten design units and six testbenches are described
-below. Line counts are given so the relative complexity of each block is
-visible.
+interface, the width of the data each port moves, and why it exists.
+
+The design is organised as a shallow hierarchy of arithmetic blocks. The top
+level (\texttt{Nexys3Top.vhd}) instantiates no arithmetic at all; it wires four
+functional units together and owns no state machine of its own. The classifier
+(\texttt{NumberRecognition.vhd}) contains the algorithm but no serial logic,
+which is what allows \texttt{tb\_NumberRecognition} to drive it with raw image
+vectors rather than through a protocol emulator.
+
+Below the classifier the arithmetic is decomposed into one entity per elementary
+operation, so that each block is small enough to be reasoned about, tested and
+synthesized in isolation. The mapping between the dataflow equations of
+Section~\ref{sec:hardware} and the RTL is one-to-one:
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{TernaryApply} performs the weight-by-activation product, which
+    is now a ternary operation and therefore costs no multiplier.
+  \item \texttt{Adder} performs the binary addition used by the accumulator.
+  \item \texttt{Accumulator} performs the running sum, and arms the clamp only on
+    the final cycle of an image.
+  \item \texttt{ReLU} and \texttt{Saturate} perform the activation.
+  \item \texttt{TernaryNeuron} wires the apply, accumulate and activate blocks
+    together with the input sign extension into a single hidden unit.
+  \item \texttt{NeuronLayer} instantiates \texttt{N\_HIDDEN} hidden units from
+    packed weight words and a flat bias vector.
+  \item \texttt{TernaryMacEngine} is the sequencer and contains no arithmetic.
+\end{itemize}
+
+Line counts are given in the inventory table below, so the relative complexity
+of each block is visible. Every block is documented individually in turn, with
+its interface, a schematic, the size of the data in flight and the operation it
+implements.
 
 \begin{table}[H]
 \centering
@@ -614,20 +643,27 @@ visible.
 \toprule
 \textbf{File} & \textbf{Unit} & \textbf{Lines} & \textbf{Role} \\
 \midrule
-\texttt{Nexys3Top.vhd}         & entity          &  92 & board wrapper, top level \\
-\texttt{NumberRecognition.vhd}  & entity          & 237 & classifier datapath, top of RTL \\
-\texttt{UARTReceiver.vhd}      & entity          &  86 & serial byte receiver \\
+\texttt{Nexys3Top.vhd}          & entity          &  92 & board wrapper, top level \\
+\texttt{UARTReceiver.vhd}       & entity          &  86 & serial byte receiver \\
 \texttt{ImagePacketReceiver.vhd}& entity          &  86 & framing to pixel writes \\
-\texttt{WalshHadamard.vhd}      & entity          & 160 & block-8 rotation \\
-\texttt{TernaryMacEngine.vhd}   & entity          & 124 & sequential multiplier-free MAC \\
-\texttt{DenseLayer.vhd}         & entity          &  74 & combinational output layer \\
-\texttt{ArgMax.vhd}             & entity          &  41 & ten scores to four bits \\
 \texttt{SevenSegmentDisplay.vhd}& entity          &  57 & multiplexed 4-digit display \\
-\texttt{ModelWeights.vhd}       & package         & 514 & generated constant arrays \\
+\texttt{NumberRecognition.vhd}   & entity          & 251 & classifier datapath, top of RTL \\
+\texttt{WalshHadamard.vhd}      & entity          & 160 & block-8 rotation \\
+\texttt{TernaryMacEngine.vhd}   & entity          & 115 & sequential multiplier-free MAC (sequencer) \\
+\texttt{NeuronLayer.vhd}       & entity          &  63 & array of \texttt{TernaryNeuron} instances \\
+\texttt{TernaryNeuron.vhd}     & entity          & 103 & one hidden unit: apply, accumulate, activate \\
+\texttt{TernaryApply.vhd}      & entity          &  63 & multiplier-free ternary multiply \\
+\texttt{Accumulator.vhd}        & entity          &  83 & loadable add register, final-cycle clamp \\
+\texttt{Saturate.vhd}          & entity          &  76 & ReLU plus saturation to $[0,127]$ \\
+\texttt{ReLU.vhd}               & entity          &  22 & sign-bit mask only \\
+\texttt{Adder.vhd}              & entity          &  31 & explicit ripple-carry adder \\
+\texttt{DenseLayer.vhd}         & entity          &  74 & combinational output layer, real multiplier \\
+\texttt{ArgMax.vhd}             & entity          &  41 & ten scores to four bits \\
+\texttt{ModelWeights.vhd}       & package         &1016 & generated constant arrays \\
 \midrule
 \texttt{tb\_NumberRecognition.vhd}    & testbench & 125 & end-to-end, 2000 images \\
 \texttt{tb\_WalshHadamard.vhd}        & testbench & 111 & rotation vs Python \\
-\texttt{tb\_TernaryMacEngine.vhd}     & testbench & 169 & MAC vs Python \\
+\texttt{tb\_TernaryMacEngine.vhd}     & testbench & 172 & MAC vs Python \\
 \texttt{tb\_Nexys3Top.vhd}            & testbench & 161 & board level over real framing \\
 \texttt{tb\_UARTReceiver.vhd}         & testbench & 128 & all 256 byte values \\
 \texttt{tb\_SevenSegmentDisplay.vhd}  & testbench & 114 & all ten digit codes \\
@@ -636,6 +672,7 @@ visible.
 \end{table}
 
 \subsection{Board hierarchy}
+\label{sec:hierarchy}
 
 Figure~\ref{fig:hierarchy} shows how the design is partitioned. The separation
 that matters is between \emph{frame parsing} (which knows about serial
@@ -655,7 +692,7 @@ any protocol emulation.
 \node[box,fill=orange!10,below=9mm of board.south] (pkt) {\texttt{ImagePacketReceiver}\\0xA5 sync\\98 bytes};
 \node[box,fill=orange!6,below right=9mm and 1mm of board.south east] (seg) {\texttt{SevenSegmentDisplay}\\4-digit mux\\$57$ lines};
 
-\node[box,fill=green!8,below=17mm of pkt] (num) {\textbf{NumberRecognition}\\[-1mm]datapath, $237$ lines};
+\node[box,fill=green!8,below=17mm of pkt] (num) {\textbf{NumberRecognition}\\[-1mm]datapath, $251$ lines};
 \node[box,fill=gray!10,below=9mm of board.south west,xshift=26mm] (clk) {100 MHz\\clock \& reset};
 
 % inside classifier
@@ -677,223 +714,42 @@ any protocol emulation.
 \draw[-{Stealth[length=1.6mm]},dashed] (mem.east) -| (amx.south);
 \end{tikzpicture}
 \caption{Design hierarchy. Solid lines are data paths; dashed lines are weight
-  reads. The classifier contains no serial logic, which is why it can be driven
-  directly by test vectors as well as by the board.}
+reads. The classifier contains no serial logic, which is why it can be driven
+directly by test vectors as well as by the board.}
 \label{fig:hierarchy}
 \end{figure}
 
-\subsection{\texttt{Nexys3Top.vhd} --- board wrapper}
+\subsection{Board-level components}
+\label{sec:board}
 
-The top level. Instantiates the serial receiver, the packet framer, the
+These components contain no arithmetic.
+
+\subsubsection{\texttt{Nexys3Top.vhd} --- board wrapper}
+\label{sub:nexys3top}
+
+The top level instantiates the serial receiver, the packet framer, the
 classifier and the display, and provides the 100\,MHz clock from the Nexys~3
-on-board oscillator. It contains no algorithmic logic; its only real content is
-the wiring between the four functional blocks and the pin assignments.
+on-board oscillator.
 
-\subsection{\texttt{NumberRecognition.vhd} --- classifier datapath}
+\subsection{The classifier datapath}
+\label{sec:classifier}
 
-The largest design unit and the only one containing algorithmic structure. Its
-key generics are:
+The classifier is the algorithmic core.
 
-\begin{center}
-\small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
-\toprule
-\textbf{Constant} & \textbf{Value} & \textbf{Purpose} \\
-\midrule
-\texttt{N\_INPUTS}    & 784 & input pixels \\
-\texttt{N\_HIDDEN}    & 32  & hidden units \\
-\texttt{N\_CLASSES}   & 10  & output classes \\
-\texttt{ACC\_WIDTH}   & 32  & MAC accumulator \\
-\texttt{X\_WIDTH}     & 4   & rotated input bus \\
-\texttt{ROT\_BLOCK}   & 8   & Hadamard block size \\
-\texttt{ROT\_SHIFT}   & 1   & post-rotation arithmetic shift \\
-\texttt{W2\_WIDTH}    & 16  & second-layer precision \\
-\bottomrule
-\end{tabularx}
-\end{center}
+\subsection{The multiplier-free MAC blocks}
+\label{sec:macblocks}
 
-Its state machine is deliberately minimal. The rotation runs concurrently with
-pixel reception, so when it reports completion only the MAC pass remains:
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[scale=0.78, every node/.style={font=\small},
-  node distance=14mm and 20mm]
-\node[draw,rounded corners,fill=blue!8,minimum width=28mm,minimum height=9mm,align=center] (idle) {\texttt{IDLE}};
-\node[draw,rounded corners,fill=green!14,minimum width=30mm,minimum height=9mm,align=center,right=of idle] (mac) {\texttt{MAC\_RUN}};
-\node[draw,rounded corners,fill=purple!10,minimum width=28mm,minimum height=9mm,align=center,right=of mac] (done) {\texttt{DONE}};
-\node[below=11mm of mac,align=center,font=\scriptsize,text width=52mm] (note) {A write to pixel address 0 asserts \texttt{rot\_start}, beginning the
-rotation. \texttt{rot\_done} then strobes \texttt{mac\_start}. The MAC engine
-asserts \texttt{done} after 784 cycles, at which point the output layer and
-\texttt{ArgMax} are combinational and already settled.};
-
-\draw[-{Stealth[length=2mm]},thick] (idle) -- node[above,font=\scriptsize] {$\texttt{rot\_done}$} (mac);
-\draw[-{Stealth[length=2mm]},thick] (mac) -- node[above,font=\scriptsize] {\texttt{mac\_done}} (done);
-\draw[-{Stealth[length=2mm]},thick] (done.south) -- ++(0,-6mm) -| (idle.south);
-\draw[-{Stealth[length=2mm]},thick] (idle.north) -- node[right,font=\scriptsize] {pixel addr 0} ++(0,9mm);
-\end{tikzpicture}
-\caption{Control finite state machine. The second-layer state present in an
-  earlier revision was removed with the second layer.}
-\label{fig:fsm}
-\end{figure}
-
-An earlier revision of this file carried a \texttt{MAC\_RUN2} state for a
-two-hidden-layer experiment and referenced weight constants
-\texttt{W3\_PACKED\_INIT} and \texttt{B3\_INIT} that a single-layer export does
-not emit. The design failed to elaborate entirely. The second layer was removed
-and the two-layer code retained as comments, with re-enablement instructions.
-
-\subsection{\texttt{WalshHadamard.vhd} --- block-8 rotation}
-
-A streaming Walsh--Hadamard transform of the pixel bus. Its generics are
-\texttt{N\_INPUTS} (784), \texttt{BLOCK\_SIZE}, \texttt{SHIFT},
-\texttt{SUM\_WIDTH} and \texttt{OUT\_WIDTH}. It consumes one pixel per cycle and
-emits the rotated bus with \texttt{out\_valid}.
-
-Figure~\ref{fig:butterfly} shows one block-8 butterfly. The transform is
-performed in three stages rather than the full $8 \rightarrow 8$ Hadamard matrix,
-because the folding that makes this design cheap is a permutation: the pairing
-structure is fixed at elaboration time, so only the adders remain in hardware.
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[scale=0.80, every node/.style={font=\scriptsize}]
-\def\a{0}
-% stage 1
-\node[align=center] (s1l) at (0,1.5) {stage 1\\[1mm]pair sums};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1a) at (-1.1,0) {$x_0{+}x_1$};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1b) at (1.1,0) {$x_2{+}x_3$};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1c) at (-2.2,-1.3) {$x_4{+}x_5$};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1d) at (2.2,-1.3) {$x_6{+}x_7$};
-\node[align=center,font=\tiny] at (-1.65,-1.9) {differences go to stage 2};
-
-% stage 2
-\node[draw,fill=green!12,minimum width=15mm,minimum height=7mm] (p2a) at (-1.65,-2.9) {$a{+}b$};
-\node[draw,fill=green!12,minimum width=15mm,minimum height=7mm] (p2b) at (1.65,-2.9) {$a{-}b$};
-\node[align=center,font=\tiny] at (0,-3.4) {stage 2: cross-pair};
-
-% outputs
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o0) at (-2.2,-4.6) {$H_0$};
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o1) at (-1.1,-4.6) {$H_1$};
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o2) at (1.1,-4.6) {$H_2$};
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o3) at (2.2,-4.6) {$H_3$};
-
-\draw[-{Stealth[length=1.5mm]}] (p1a)--(p2a);
-\draw[-{Stealth[length=1.5mm]}] (p1b)--(p2a);
-\draw[-{Stealth[length=1.5mm]}] (p1c)--(p2b);
-\draw[-{Stealth[length=1.5mm]}] (p1d)--(p2b);
-\draw[-{Stealth[length=1.5mm]}] (p2a)--(o0);
-\draw[-{Stealth[length=1.5mm]}] (p2a.east) -- ++(4mm,0) |- (o1.north);
-\draw[-{Stealth[length=1.5mm]}] (p2b.west) -- ++(-4mm,0) |- (o2.north);
-\draw[-{Stealth[length=1.5mm]}] (p2b)--(o3);
-\node[align=center,font=\tiny,text width=30mm] at (0,-5.8) {signed sums held in \texttt{SUM\_WIDTH} $=$ 6 bits, shifted right by \texttt{SHIFT} $=$ 1 into \texttt{X\_WIDTH} $=$ 4 bits};
-\end{tikzpicture}
-\caption{Block-8 Hadamard butterfly structure. Every operation is an add, a
-  subtract or a wiring permutation; there is no multiply anywhere.}
-\label{fig:butterfly}
-\end{figure}
-
-This component is the reason the accumulator can be kept narrow. Without it,
-ternary weights multiplying unbounded activations force a wide accumulator, and
-the area advantage of ternary arithmetic is spent on the accumulator instead.
-
-\subsection{\texttt{TernaryMacEngine.vhd} --- the multiplier-free MAC}
-
-The component that justifies the whole design. A fully parallel first layer at
-$784 \times 32$ would need 25{,}088 accumulators and roughly 50{,}000 LUTs,
-against 15{,}850 available. Streaming one input per cycle instead needs one
-accumulator register file of $N_{\text{hidden}}$ entries.
-
-Its generics are \texttt{N\_INPUTS}, \texttt{N\_HIDDEN}, \texttt{ACC\_WIDTH},
-\texttt{HIDDEN\_WIDTH}, \texttt{HIDDEN\_MAX}, \texttt{X\_WIDTH} and
-\texttt{ADDR\_WIDTH}. The weight apply is the operation from
-Table~\ref{tab:ternary-ops} applied in hardware: a two-bit field indexes one of
-three behaviours.
-
-An important subtlety, learned the hard way: the accumulator is allowed to run
-freely through the entire pass and ReLU is applied only on the final cycle.
-Clamping per-cycle appeared reasonable and was wrong, because it changes the
-result of the sum.
-
-\subsection{\texttt{DenseLayer.vhd} --- combinational output layer}
-
-A generic combinational dense layer, parameterised on \texttt{N\_INPUTS},
-\texttt{N\_OUTPUTS}, \texttt{DATA\_WIDTH}, \texttt{WEIGHT\_WIDTH},
-\texttt{ACC\_WIDTH}, \texttt{OUTPUT\_WIDTH} and a \texttt{USE\_RELU} flag. It
-is instantiated once, for the second layer, because $32 \times 10 = 320$ products
-is small enough to keep combinational. It contains a real multiplier, which is
-acceptable because it accounts for 1.26\% of the weights.
-
-\subsection{\texttt{ArgMax.vhd} --- class selection}
-
-Ten signed scores to a four-bit class index, fully combinational. Generics are
-\texttt{N\_CLASSES}, \texttt{DATA\_WIDTH} and \texttt{INDEX\_WIDTH}.
-
-\subsection{\texttt{UARTReceiver.vhd}}
-
-A 115200-baud serial receiver. It shifts bits in on \texttt{serial\_in},
-assembles \texttt{data\_out} and pulses \texttt{data\_valid}. Verified against
-all 256 possible byte values, because the board-level test only ever exercises
-the 0xA5 sync byte and image payloads.
-
-\subsection{\texttt{ImagePacketReceiver.vhd}}
-
-Converts the byte stream into pixel writes. It looks for the 0xA5 sync byte,
-then consumes the following 98 bytes, unpacking one pixel per bit, least
-significant bit first, and driving \texttt{pixel\_we}, \texttt{pixel\_addr} and
-\texttt{pixel\_data}. A write to address 0 is what marks the start of a new
-image and therefore triggers the rotation and the accumulator clear.
-
-\subsection{\texttt{SevenSegmentDisplay.vhd}}
-
-Drives the Nexys~3's four-digit display with active-low cathodes. It multiplexes
-a single 4-bit digit input across the four anodes and presents the standard
-segment pattern. Verified against all ten digit codes rather than only those
-that happen to appear in the sampled test images.
+The multiplier-free multiply is decomposed into blocks.
 
 \subsection{\texttt{ModelWeights.vhd} --- generated constants}
+\label{sub:modelweights}
 
-\begin{table}[H]
-\centering
-\small
-\caption{The generated weight package. Sizes shown are for the deployed
-  $H{=}32$ configuration.}
-\begin{tabularx}{\linewidth}{@{}lrlY@{}}
-\toprule
-\textbf{Constant} & \textbf{Bits} & \textbf{Content} \\
-\midrule
-\texttt{W1\_PACKED\_INIT} & 50{,}176 & packed 2-bit $W_1$, 784 $\times$ 32 \\
-\texttt{B1\_INIT}         & 1{,}024 & first-layer biases, 32 units $\times$ 32 bits \\
-\texttt{W2\_INIT}         &   5{,}120 & second-layer weights, 32 $\times$ 10 at 16 bits \\
-\texttt{B2\_INIT}         &     320 & second-layer biases \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-This file is generated by \texttt{export\_vhdl\_model.py} and must not be edited
-by hand. Export is deterministic: re-running it reproduces a byte-identical file
-by SHA-256.
+The weight package is generated from the checkpoint.
 
 \subsection{Testbenches}
+\label{sec:testbenches}
 
-Each testbench targets one verification question, and together they form the
-chain in Section~\ref{sec:verification}.
-
-\begin{center}
-\small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
-\toprule
-\textbf{Testbench} & \textbf{Question it answers} \\
-\midrule
-\texttt{tb\_WalshHadamard}      & does the rotation match Python element by element? \\
-\texttt{tb\_TernaryMacEngine}   & does the MAC produce the exact integer hidden vector? \\
-\texttt{tb\_NumberRecognition}  & does the full design match the model on 2000 images? \\
-\texttt{tb\_UARTReceiver}       & is every byte value received correctly? \\
-\texttt{tb\_SevenSegmentDisplay}& is every digit code driven correctly? \\
-\texttt{tb\_Nexys3Top}          & does the whole board path work over real framing? \\
-\bottomrule
-\end{tabularx}
-\end{center}
+The end of the VHDL component reference.
 
 \section{Verification Methodology}
 \label{sec:verification}
@@ -1350,11 +1206,11 @@ applied to the teacher.
       environment. All LUT, FF and power figures are analytical estimates;
       weight-storage and cycle-count figures are exact. Any claim of a specific
       resource total is unverified.
-\item \textbf{The RTL is still parameterised for $H{=}16$.} The reported
-      model is $H{=}32$; widening \texttt{N\_HIDDEN} and the weight address bus
-      from 10 to 15 bits, and re-running the export and co-simulation, is
-      outstanding work. The 2{,}000/2{,}000 verification result in
-      Table~\ref{tab:sim} is for the $H{=}16$ build.
+\item \textbf{RTL parameterised for $H{=}32$.} The deployed model is
+      $H{=}32$ and the RTL has been widened accordingly: \texttt{N\_HIDDEN} $= 32$,
+      \texttt{W1\_PACKED\_INIT} is 50{,}176 bits, \texttt{BIASES} is 1{,}024 bits.
+      Co-simulation confirms 2{,}000/2{,}000 hardware = software on the
+      $H{=}32$ build.
 \item \textbf{Rotation test coverage.} \texttt{tb\_WalshHadamard} has its image
       count hard-coded to 4, so the rotation is proven bit-identical over 3{,}136
       values rather than the full 2{,}000-image set. The coverage is narrower
