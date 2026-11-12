@@ -9,36 +9,46 @@ its PyTorch source model.
 | **Accuracy** | **94.61%** MNIST test; 1,871 / 2,000 in hardware simulation |
 | **Hardware = software** | **2,000 / 2,000** (100%) |
 | **Weight density** | **1.122 bits/weight** (0.926 in W1 alone) |
+| **Weight constants** | 56,640 bit (6.9 KiB) in the deployed package |
 | **Zero density (W1)** | 65.86% |
 | **Multipliers** | **0** |
-| **Weights** | 25,418 — 25,088 ternary in W1, 330 in W2/B2 at 16 bits |
+| **Parameters** | 25,450 — 25,088 ternary weights in W1, 330 values in W2/B2 at 16 bits, 32 B1 biases |
 | **Latency** | ~1,568 cycles ≈ 15.7 µs @ 100 MHz (784 rotation + 784 MAC) |
-| **Target** | Digilent Nexys 3 (Artix-7 XC7A100T) |
+| **Target** | Digilent Nexys 3 (Spartan-6 XC6SLX16, 15,850 LUTs) — the board and the part still disagree; see roadmap task 0 in the report |
 
 Deployed checkpoint `model/mnist_h32mild.pt`; `rtl/ModelWeights.vhd`
 SHA-256 `8F3F8D0E0C47B8FA2AC3BB09591F4A6F3779FEB7674C5BCC76F30F751C53A6C1`.
 
 ## Cost against the classical reference
 
-The float reference is the project's own 784-256-10 teacher at 98.24% ? a
-conventional fully-connected float network, one hidden layer of 256 units.
+The float reference is the project's own 784-256-10 teacher at 98.05% on the
+10,000-image MNIST test set — a conventional fully-connected float network, one
+hidden layer of 256 units. Its recorded validation accuracy is 98.24%.
 
 | | Float 784-256-10 | Ternary 784-16-10 | **Ternary 784-32-10** | ratio vs float |
 |---|---|---|---|---|
-| Parameters | 203,530 | 12,730 | 25,418 | 8.0x |
-| **Multipliers** | 203,530 | **0** | **0** | ? |
+| Parameters | 203,530 | 12,730 | 25,450 | 8.0x |
+| **Multipliers** | 203,530 | **0** | **0** | — |
 | MACs per image | 203,264 | 12,704 | 25,408 | 8.0x |
-| Latency at 100 MHz | 2.033 ms | 0.127 ms | 0.254 ms | 8.0x |
-| Weight storage | 6,512,960 bit | 15,121 bit | 28,515 bit | **228x** |
-| BRAM36 for weights | 24.8 | 0.06 | 0.11 | **225x** |
+| MAC cycles at 100 MHz | 203,264 | 784 | **784** | 259x |
+| End-to-end latency | 2.033 ms* | -- | **15.7 us** | 129x |
+| Weight storage (information) | 6,512,960 bit | 15,121 bit | 28,515 bit | **228x** |
+| Weight storage (encoded) | 6,512,960 bit | 28,480 bit | 56,640 bit | **115x** |
+| BRAM36 for weights | 177 | 0.8 | 1.5 | **118x** |
 | Entropy per weight | 32.0 bit | 1.189 bit | **1.122 bit** | 28.5x |
-| MNIST test | **98.24%** | 94.19% | 94.61% | -3.6 pts |
+| MNIST test | **98.05%** | 94.19% | 94.61% | -3.4 pts |
 | Hand-drawn | 80.5% | 74.8% | **84.8%** | **+4.3** |
 | Rendered font glyphs | **91.1%** | 78.9% | 83.3% | -7.8 |
 
 The float network is more accurate on clean MNIST. The ternary design does not
-win on accuracy and this document does not claim it does ? it wins on area,
+win on accuracy and this document does not claim it does — it wins on area,
 latency and energy, and on hand-drawn input it is the better classifier.
+
+\* analytical: one MAC per cycle, since float products are not shared across
+units. Every other figure in the table is measured. The ternary engine applies
+one input to all 32 lanes per cycle, so its 25,408 MACs cost 784 cycles; the
+15.7 us is the measured end-to-end compute time in co-simulation, including the
+rotation pipeline (17.8 us through the UART framer).
 
 ---
 

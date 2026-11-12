@@ -1,39 +1,52 @@
 {
-  "ternary": {
-    "arch": [
-      784,
-      32,
-      10
-    ],
-    "params": 25450,
-    "val": 94.26,
-    "w1_weights": 25088,
-    "w2_weights": 330,
-    "zero_density": 0.658601701259613,
-    "entropy": 1.1218531645493748,
-    "w1_entropy": 0.9261504997016904,
-    "macs": 25408,
-    "multipliers": 0,
-    "mnist": 93.55,
-    "hand": 84.75,
-    "font": 83.33333333333333
-  },
-  "float": {
-    "arch": [
-      784,
-      256,
-      10
-    ],
-    "params": 203530,
-    "val": 98.24000000000001,
-    "w1_weights": 200704,
-    "w2_weights": 2570,
-    "zero_density": 0.0,
-    "entropy": null,
-    "macs": 203264,
-    "multipliers": 203530,
-    "mnist": 96.95,
-    "hand": 80.5,
-    "font": 91.11111111111111
-  }
+ "provenance": {
+  "note": "Every number here was measured, not estimated. 'mnist_test' is the accuracy on the full 10,000-image MNIST test set. 'mnist_pipeline_2000' is the measurement through the complete pipeline on the 2,000 verification images: the GUI for the float model, the RTL simulation for the ternary one. 'validation' is the accuracy recorded in the checkpoint when it was selected, on the split that was not the test set.",
+  "measured_on": "2026-11-12",
+  "how": [
+   "python/evaluate_checkpoints.py for the ternary checkpoints (full 10,000-image test set)",
+   "python/float_baseline.py for the float teacher (full 10,000-image test set)",
+   "ModelSim run of tb_NumberRecognition over the 2,000 verification images for the hardware figure"
+  ]
+ },
+ "ternary": {
+  "arch": [
+   784,
+   32,
+   10
+  ],
+  "checkpoint": "model/mnist_h32mild.pt",
+  "params": 25450,
+  "validation": 94.26,
+  "mnist_test": 94.61,
+  "mnist_pipeline_2000": 93.55,
+  "w1_weights": 25088,
+  "w2_weights": 330,
+  "zero_density": 0.658601701259613,
+  "entropy": 1.1218531645493748,
+  "w1_entropy": 0.9261504997016904,
+  "macs": 25408,
+  "multipliers": 0,
+  "hand": 84.75,
+  "font": 83.33333333333333
+ },
+ "float": {
+  "arch": [
+   784,
+   256,
+   10
+  ],
+  "checkpoint": "../ternary_mnist_fpga_project/output/float_teacher.pt",
+  "params": 203530,
+  "validation": 98.24,
+  "mnist_test": 98.05,
+  "mnist_pipeline_2000": 96.95,
+  "w1_weights": 200704,
+  "w2_weights": 2570,
+  "zero_density": 0.0,
+  "entropy": null,
+  "macs": 203264,
+  "multipliers": 203530,
+  "hand": 80.5,
+  "font": 91.11111111111111
+ }
 }

@@ -1,4 +1,4 @@
-%% ============================================================================
+﻿%% ============================================================================
 %%  Ternary Neural Network Inference for MNIST on the Nexys 3 FPGA
 %%  Project report -- method, hardware, verification, measured results
 %%
@@ -29,13 +29,39 @@
 \usepackage{float}
 \usepackage{enumitem}
 \usepackage{tabularx}
+\usepackage{tocloft}
+\usepackage{multicol}
+%% The table of contents is long for a report of this size; tighten the entry
+%% spacing so it occupies one page rather than spilling a few lines onto a
+%% second, mostly empty page.
+\renewcommand{\cfttoctitlefont}{\normalfont\Large\bfseries}
+\setlength{\cftbeforesecskip}{1pt}
+\setlength{\cftbeforesubsecskip}{0pt}
+\setlength{\cftsecindent}{0pt}
+\setlength{\cftsubsecindent}{1.5em}
+\setlength{\cftparskip}{0pt}
 \allowdisplaybreaks
 \sloppy
 \usepackage{pgfplots}
 \usepackage{pgfplotstable}
 \pgfplotsset{compat=1.18}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds}
+
+%% --- shared schematic conventions ------------------------------------------
+%% One convention everywhere: inputs stacked on the left, outputs stacked on
+%% the right, one port per row, the width on the second line of every port box.
+\tikzset{
+  chip/.style   = {draw, rounded corners=2pt, align=center,
+                   font=\scriptsize, inner sep=3pt, thick},
+  pin/.style    = {draw, rounded corners=1.5pt, fill=gray!7, align=center,
+                   font=\scriptsize, inner sep=1.6pt,
+                   minimum height=7mm, minimum width=30mm},
+  pout/.style   = {draw, rounded corners=1.5pt, fill=blue!6, align=center,
+                   font=\scriptsize, inner sep=1.6pt,
+                   minimum height=7mm, minimum width=30mm},
+  sig/.style    = {->, semithick, gray!65!black},
+}
 
 \hypersetup{
   colorlinks=true,
@@ -66,32 +92,36 @@
 \captionsetup{font=small,labelfont=bf}
 
 \newcolumntype{Y}{>{\centering\arraybackslash}X}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
 \newcommand{\good}{\textcolor{good}{\textbf{}}}
 \newcommand{\bad}{\textcolor{bad}{\textbf{}}}
 \newcommand{\est}{\textcolor{warn}{est.}}
 
-\title{\vspace{-1.2cm}
-  \textbf{\LARGE Ternary Neural Network Inference}\\[0.35cm]
-  \textbf{\Large for Handwritten Digit Recognition on the Nexys 3 FPGA}\\[0.9cm]
-  \vspace{0.3cm}
-  \normalsize
-  A multiplier-free $784 \rightarrow 32 \rightarrow 10$ ternary network,\\
-  verified bit-exact against its software reference\\[1.4cm]
-  \large Project Report
-}
-\author{}
-\date{}
-
 \begin{document}
-\maketitle
-\tableofcontents
-\newpage
 
-%% ============================================================================
+%% Title page ----------------------------------------------------------------
+\begin{titlepage}
+\centering
+\vspace*{2.6cm}
+{\bfseries\LARGE Ternary Neural Network Inference\par}
+\vspace{0.55cm}
+{\bfseries\Large for Handwritten Digit Recognition\\[0.15cm]
+on the Nexys~3 FPGA\par}
+\vspace{1.8cm}
+{\normalsize A multiplier-free $784 \rightarrow 32 \rightarrow 10$ ternary network,\\[0.1cm]
+verified bit-exact against its software reference\par}
+\vfill
+{\large Project Report\par}
+\vspace*{1.6cm}
+\end{titlepage}
+
+{\small\tableofcontents}
+
 \begin{abstract}
 This report describes the design, implementation and verification of a ternary
 ($\{-1,0,+1\}$) neural network accelerator for handwritten digit recognition
-on the Digilent Nexys~3 FPGA (Artix-7 XC7A100T). The deployed network is
+on the Digilent Nexys~3 FPGA (Spartan-6 XC6SLX16). The deployed network is
 $784 \rightarrow 32 \rightarrow 10$: its first layer is entirely ternary and
 contains \emph{zero} arithmetic multipliers, because multiplication by $-1$,
 $0$ and $+1$ reduces to a sign flip, a mask and a wire.
@@ -112,13 +142,15 @@ reference over 2{,}000 MNIST images.
 
 Against a classical float reference of the same task, the ternary design
 achieves a \textbf{complete elimination} of the multiplier count and a
-\textbf{228$\times$} reduction in weight storage for a loss of 3.6 accuracy
-points. We report this honestly as a \emph{cost} trade, not a free win: the
+\textbf{228$\times$} reduction in the information content of the weights ---
+115$\times$ fewer bytes stored --- for a loss of 3.4 accuracy
+points on the test set. We report this honestly as a \emph{cost} trade, not a free win: the
 float reference remains more accurate. The value proposition is area, latency
 and energy, which are the metrics that matter for an edge classifier.
 \end{abstract}
 
 %% ============================================================================
+\newpage
 \section{Introduction}
 \label{sec:intro}
 
@@ -130,10 +162,20 @@ area, latency and energy. The dominant term in all three is the
 multiply--accumulate (MAC) unit. A conventional fully-connected layer with
 $n$ inputs and $m$ outputs requires $nm$ multipliers, each occupying on the
 order of a thousand LUTs on a 7-series FPGA. A $784 \rightarrow 256$ layer
-therefore cannot fit on the 15{,}850 LUTs available on a Nexys~3 (Artix-7
-XC7A100T). The problem addressed by this work is: \emph{how to deploy a
+therefore cannot fit on the 15{,}850 LUTs available on a Nexys~3. The problem
+addressed by this work is: \emph{how to deploy a
 useful MNIST classifier on a device that cannot hold a single conventional
 hidden layer, without sacrificing the ability to verify the result.}
+
+The two candidate devices are worth stating precisely, because the report
+names one and the board is the other. The Digilent Nexys~3 carries a
+Spartan-6 XC6SLX16: 15{,}850 LUTs, 32 BRAM18 blocks (520\,Kib) and 32 DSP48E1
+slices. The Artix-7 XC7A100T has 63{,}400 LUTs, 135 BRAM36 blocks (4.86\,Mb)
+and 240 DSP48E1 slices. Every device budget in this report is quoted against
+the \emph{smaller} Spartan-6 part, which is the conservative choice and the
+one the shipped constraint file targets. Task~0 of the roadmap
+(Section~\ref{sec:roadmap}) resolves the naming question; nothing in the
+argument below depends on which way it is resolved.
 
 \subsection{Proposed solution}
 \label{sec:solution}
@@ -144,8 +186,10 @@ into a sign flip, a mask or a wire, eliminating all DSP usage in the dominant
 layer. A Walsh--Hadamard rotation of the pixel bus keeps the accumulator
 narrow, and an \texttt{integer-exact} training mode ensures the RTL reproduces
 the PyTorch model bit-for-bit. The design is $784 \rightarrow 32 \rightarrow 10$,
-stores its weights in 3.5 KiB, performs zero multipliers in the first layer, and
-classifies in 254\,\textmu s at 100\,MHz, at 94.61\% MNIST accuracy.
+stores its weights in 3.5 KiB of information, 6.9 KiB of packed constants,
+performs zero multipliers in the first layer, and
+classifies in 15.7\,\textmu s of compute (17.8\,\textmu s including
+framing) at 100\,MHz, at 94.61\% MNIST accuracy.
 
 \subsection{Why ternary networks}
 
@@ -178,7 +222,10 @@ first layer is drawn from $\{-1,0,+1\}$, the entire $784 \times H$ multiply stag
 collapses into wiring. What remains is an adder tree and a weight memory, and the
 layer becomes cheap enough that several times more hidden units fit.
 
-This is not a new idea. BitNet b1.58 and the Bonsai 27B work establish that
+This is not a new idea. Ternary weights were introduced as Ternary Weight
+Networks \cite{li2016ternary} and trained ternary quantisation
+\cite{zhu2017trained}, and integer-only inference was formalised by Jacob
+\emph{et al.} \cite{jacob2018quant}. BitNet b1.58 and the Bonsai 27B work establish that
 fully ternary networks are competitive with much larger floating-point ones at
 inference, and this project draws its technique set from that lineage
 (Section~\ref{sec:ternary}). What is new here is the \emph{integer-exact
@@ -188,7 +235,7 @@ is not an approximation of the model but a faithful implementation of it.
 \subsection{Scope and honest positioning}
 
 The classical float network used as reference is the 784--256--10 teacher from
-this project, reaching \textbf{98.24\%} on the MNIST test set. The ternary
+this project, reaching \textbf{98.05\%} on the MNIST test set. The ternary
 network reaches \textbf{94.61\%}. The ternary design does not win on accuracy and
 this report does not claim that it does.
 
@@ -199,23 +246,28 @@ positioning, and Section~\ref{sec:results} develops it in full.
 \centering
 \small
 \caption{Headline comparison. The float reference is more accurate; the ternary
-  design is far cheaper. Both columns are measured, not estimated.}
+  design is far cheaper. Every figure in this table is measured, not estimated.
+  ``Information'' is the entropy of the weights; ``encoded'' is what the
+  hardware actually holds, at two bits per first-layer weight. The BRAM36 row
+  counts the encoded size in 36\,Kb blocks.}
 \label{tab:headline}
+\renewcommand{\arraystretch}{1.14}
 \begin{tabularx}{\linewidth}{@{}lY Y Y@{}}
 \toprule
  & \textbf{Float ref.} & \textbf{Ternary $H{=}16$} & \textbf{Ternary $H{=}32$} \\
  & 784--256--10 & 784--16--10 & 784--32--10 \\
 \midrule
-MNIST test accuracy      & \good 98.24\% & 94.19\% & 94.61\% \\
-MNIST (GUI pipeline)     & \good 97.0\%  & 92.5\%  & 93.5\% \\
+MNIST test accuracy      & \good 98.05\% & 94.19\% & 94.61\% \\
+MNIST (2{,}000 pipeline) & \good 97.0\%  & 92.5\%  & 93.5\% \\
 Hand-drawn               & 80.5\%  & 74.8\%  & \good 84.8\% \\
 Rendered font glyphs     & \good 91.1\% & 78.9\% & 83.3\% \\
 \midrule
-Parameters               & 203{,}530 & 12{,}730 & 25{,}418 \\
+Parameters               & 203{,}530 & 12{,}730 & 25{,}450 \\
 Multipliers              & 203{,}530 & \good 0 & \good 0 \\
 MACs per image           & 203{,}264 & \good 12{,}704 & 25{,}408 \\
-Weight storage           & 795.0 KiB & \good 1.8 KiB & 3.5 KiB \\
-BRAM36 for weights       & 24.8   & \good 0.06 & 0.11 \\
+Weight storage (information) & 795.0 KiB & \good 1.8 KiB & 3.5 KiB \\
+Weight storage (encoded)  & 795.0 KiB & \good 3.5 KiB & 6.9 KiB \\
+BRAM36 for weights       & 177   & \good 0.8 & 1.5 \\
 Entropy (bits/weight)    & 32.0   & 1.189 & \good 1.122 \\
 \bottomrule
 \end{tabularx}
@@ -254,15 +306,19 @@ accuracy actively worse.
 
 The reference network is a fully connected multilayer perceptron,
 $784 \rightarrow 256 \rightarrow 10$, trained in float32 by the original
-supervision path in this project. It reaches \textbf{98.24\%} on the 10{,}000
-MNIST test images. It is used here in two roles: as the accuracy yardstick, and
---- in one discarded experiment --- as a distillation teacher.
+supervision path in this project. It reaches \textbf{98.05\%} on the 10{,}000
+MNIST test images (its recorded validation accuracy, the split the checkpoint was
+selected on, is 98.24\%). It is used here in two roles: as the accuracy
+yardstick, and --- in one discarded experiment --- as a distillation teacher.
 
 Its cost is what motivates everything else. At float32 it holds
 $203{,}530 \times 32 = 6{,}512{,}960$ bits of weights, or roughly 795 KiB, which
-is 24.8 BRAM36 blocks and the majority of the board's 50 available blocks. It
+is 177 BRAM36 blocks --- more than the 135 the XC7A100T has, and eleven times
+the 16 BRAM36 equivalents of the Nexys~3's Spartan-6. It
 requires 203{,}264 multiply--accumulate operations per image and therefore a
-comparable number of multipliers. Neither figure is compatible with a device
+comparable number of multipliers: as DSP48E1 slices that is 203{,}264 of them,
+against the 32 the Spartan-6 has and the 240 the XC7A100T has; built from LUTs
+it would be several million of them. Neither figure is compatible with a device
 that also has to run the rotation, the control logic and the UART receiver.
 
 \subsection{The information-content argument}
@@ -276,9 +332,9 @@ expect it to cost nothing.
 The prediction from this argument is that ternary accuracy should be bounded by
 the float baseline and should approach it only as capacity grows. Section~
 \ref{sec:width} tests this directly with a width sweep, and the result is
-consistent: the measured entropy of the ternary network is 1.19 bits per weight,
-roughly 3.7\% of the float representation, and it recovers 95.6\% of the
-reference's absolute accuracy while using 6.25\% of the parameters.
+consistent: the measured entropy of the deployed ternary network is 1.12 bits
+per weight, 3.5\% of the float representation, and it recovers 96.5\% of the
+reference's accuracy while using 12.5\% of the parameters.
 
 \subsection{Cost model}
 
@@ -291,18 +347,27 @@ definitions:
   the number of float weights.
 \item[MACs.] Multiply--accumulate operations per image, counting one MAC per
   weight application.
-\item[Latency.] MAC count divided by clock frequency, assuming one MAC per
-  cycle. The sequential MAC engine does indeed sustain one MAC per cycle, so
-  this is a cycle-accurate figure and not merely proportional.
-\item[Weight storage.] Measured as the entropy of the first layer plus 16 bits
-  per second-layer weight, which is what the hardware actually stores.
+\item[Latency.] The number of input cycles divided by the clock frequency. The
+  engine consumes one input per cycle and applies it to all 32 units at once, so
+  the 25{,}408 MACs of an image cost 784 cycles, not 25{,}408. For the float
+  reference, whose products are not shared across units, latency is the MAC
+  count divided by the clock frequency. Both figures are cycle-accurate.
+\item[Weight storage.] Two figures are reported, and they are not the same
+  thing. The \emph{information content} of the weights is the entropy of the
+  first layer plus 16 bits per second-layer weight; the float reference is
+  counted at its native 32 bits per weight. The \emph{encoded} size is what the
+  hardware actually holds: the first layer is stored in its two-bit packing,
+  one of the four encodings unused, so the encoded size is larger than the
+  information content. Both are stated wherever a storage ratio is quoted.
 \end{description}
 
-We deliberately do \emph{not} quote power or area figures. No synthesis tool is
-available in this environment, so those numbers would be fabricated. Energy
-claims are handled in Section~\ref{sec:energy} by counting arithmetic
-operations and memory accesses, which \emph{is} measurable, and by stating
-explicitly which parts of the argument are inference.
+No \emph{measured} power or area figure is quoted anywhere in this report. No
+synthesis tool is available in this environment, so such numbers would be
+fabricated; where an area figure appears (Table~\ref{tab:resources}) it is
+labelled as an analytical estimate and is replaced by measured counts in task~4
+of the roadmap. Energy claims are handled in Section~\ref{sec:energy} by
+counting arithmetic operations and memory accesses, which \emph{is} measurable,
+and by stating explicitly which parts of the argument are inference.
 
 %% ============================================================================
 \section{Preliminaries: Ternary Weight Compression}
@@ -448,96 +513,212 @@ is verified bit-identical to the Python reference over 3{,}136 values with total
 absolute error zero.
 
 %% ============================================================================
-\section{Where Ternary Weight Compression Shines}
-\label{sec:llm}
+\section{Ternary Compression in the Wider AI Landscape}
+\label{sec:futures}
 
-Ternary weight compression is not limited to small MNIST classifiers. The
-technique becomes \emph{more} valuable as models grow, because the dominant
-cost in large-language-model (LLM) inference shifts from compute to memory
-bandwidth. This section surveys where the approach pays off most.
+The network in this report has 25{,}450 parameters, of which 25{,}408 are
+weights. That is six orders of magnitude
+smaller than a modern language model, and it would be easy to read the project
+as a curiosity that does not generalise. The opposite is true. The constraint
+that shaped this design --- \emph{move fewer bits, and do not multiply} --- is
+now one of the organising constraints of artificial intelligence as a whole.
+This section places the project in that trajectory, and is explicit about which
+claims are shipping practice and which are research.
 
-\subsection{The memory-bandwidth wall in LLM inference}
+\subsection{Why the pressure is structural}
 
-In a modern LLM the parameter count ranges from 1 billion to over 1 trillion.
-At FP16 precision a 7B-parameter model occupies 14\,GB; a 70B model occupies
-140\,GB. Serving such a model requires streaming those weights from DRAM to
-the accelerator on every token. The arithmetic (matrix--vector products) is
-comparatively cheap; the bottleneck is \emph{moving the weights}. Memory
-bandwidth, not FLOPS, determines tokens-per-second.
+Three quantities have grown at different rates over the last decade: model size,
+memory bandwidth, and the energy budget available at the point of use. Model
+size has grown fastest. The consequence is that inference on a large model is
+usually \emph{memory-bound}, not compute-bound: the arithmetic per weight is
+small, so the cost of fetching the weight dominates the cost of using it
+\cite{horowitz2014compute}. Every bit removed from a weight is therefore
+removed from the critical path of every token, every frame and every inference.
 
-Ternary compression attacks this directly. Replacing 16-bit weights with ternary
-values reduces the weight volume by roughly $10\times$--$16\times$, which
-translates almost linearly into higher throughput and lower energy per token.
+This is why compression is not a temporary optimisation. A factor of two in
+weight volume is a factor of two in the dominant term, and that term does not
+disappear when the process node improves. Ternary weights take the argument to
+its limit: two bits per weight, of which one encoding is unused, for an entropy
+of about 1.12 bits per weight in this design (Section~\ref{sec:ternary}).
 
-\subsection{BitNet b1.58 and the ternary LLM frontier}
+\subsection{Large language models}
 
-BitNet b1.58~\cite{bitnet} demonstrated that a 1.58-bit (ternary)
-Transformer can match FP16 baselines at the same parameter count, while
-eliminating all floating-point multiplications in the linear layers. Key
-results:
+The clearest evidence that ternary weights scale is the BitNet line of work.
+BitNet b1.58 \cite{bitnet} trains a Transformer whose linear-layer weights are
+restricted to $\{-1,0,+1\}$ and reports accuracy matching an FP16 baseline of the
+same parameter count from roughly three billion parameters upward, while:
 
 \begin{itemize}[leftmargin=*]
-  \item \textbf{Zero multiplications} in the attention and feed-forward
-    projections: only additions and subtractions remain.
-  \item \textbf{3.5$\times$ lower memory} for the weight matrices compared
-    to FP16, enabling larger models on the same hardware.
-  \item \textbf{2.4$\times$ faster} inference on CPU, because the
-    arithmetic is addition-only and the memory traffic is slashed.
-  \item \textbf{Energy reduction} of up to $40\times$ for the linear layers,
-    since addition consumes far less dynamic power than multiplication.
+  \item eliminating every floating-point multiplication in the attention and
+    feed-forward projections --- only additions and subtractions remain;
+  \item reducing weight memory by about $3.5\times$ relative to FP16, which
+    allows a larger model in the same memory;
+  \item reducing the energy of the linear layers by up to $71\times$ in the
+    authors' arithmetic model, because addition is far cheaper than
+    multiplication and the memory traffic is smaller;
+  \item running about $2.4\times$ faster on CPU, where the bottleneck is
+    memory movement rather than vector throughput.
 \end{itemize}
 
-The Bonsai 27B work extends this to 27-billion-parameter models, proving
-that ternary networks scale beyond toy benchmarks. The techniques adopted in
-this project---Walsh--Hadamard rotation, selective precision, closed-loop
-sparsity control---are drawn directly from that lineage.
+The mechanism is exactly the one used here. A ternary weight turns a
+multiply--accumulate into an add, a subtract, or nothing; the accumulator and
+the memory interface become the whole datapath. Recent 27-billion-parameter
+ternary models extend the same result to a size where serving cost is a real
+commercial constraint.
 
-\subsection{Why this project matters for that trajectory}
+Ternary weights are the far end of a curve that the field has already travelled
+most of the way along. Post-training quantisation of large models to three or
+four bits per weight is now routine and is reported to cost little accuracy
+\cite{frantar2022gptq}, and mixed-precision recipes that keep activations at
+eight bits while compressing the weights are the standard way to run these
+models on accelerators \cite{hoefler2021fast}. The division of labour is the
+same as in this design: compress the large matrix, keep the small one wide.
 
-This FPGA project is a \emph{miniature} of the same problem. The Nexys~3 has
-15{,}850 LUTs and 50 BRAM36 blocks; a 7B-parameter LLM has 14\,GB of weights
-and thousands of tensor cores. The scale differs by six orders of magnitude,
-but the \emph{structure} of the problem is identical:
+One caveat matters and is often omitted: these results come from \emph{training}
+in ternary from the start, not from rounding a finished FP16 model. Post-hoc
+ternarisation of an existing network degrades badly, which is why this project
+also trains in an integer-exact mode rather than quantising afterwards.
+
+\subsection{Edge, embedded and always-on AI}
+
+At the other end of the scale, the same trade decides whether a product exists
+at all. A microcontroller-class device has tens to hundreds of kilobytes of
+memory and a power budget measured in milliwatts; a wearable or an implant has
+less. In that regime a floating-point unit is a luxury and a multiplier is a
+significant block. Ternary weights fit in on-chip flash, need no DSP slice, and
+turn the accelerator into an adder tree with a small ROM.
+
+The applications are unglamorous and numerous: keyword spotting, gesture
+recognition, vibration-based predictive maintenance, seizure and arrhythmia
+detection, always-on vision wake-up circuits, and sensor fusion in wearables.
+In each case the model is small, the input rate is low, and the energy per
+inference is the product specification. A multiplier-free integer datapath is
+not a compromise there; it is the only way to hit the budget.
+
+This project is a worked example at exactly that scale: 15{,}850 LUTs, no DSP
+slice in the first layer, 6.9 KiB of packed weight constants, 15.7\,\textmu s per image and a
+datapath that is bit-exact against its training model. The number that matters
+for a product is not the 94.61\% alone but the combination of accuracy, area and
+energy that a ternary layer makes possible.
+
+\subsection{Vision, generative models and multimodal systems}
+
+Attention and feed-forward blocks dominate vision Transformers and diffusion
+models in the same way they dominate language models, so weight compression
+transfers directly. The active research questions are different, though. Image
+and video models are more sensitive to activation precision than to weight
+precision, which favours the \emph{selective} approach used here: ternary where
+the weight matrix is large, higher precision where the dynamic range is needed.
+In this design the second layer is kept at 16 bits for exactly that reason, and
+it costs 1.26\% of the weights.
+
+Two further directions are worth naming. The first is on-device generation:
+a ternary backbone with higher-precision adapters can fit a diffusion or
+language model into a phone or a headset, where the alternative is sending every
+request to a datacentre. The second is conditional computation: a third state
+is a natural encoding for ``skip this block'', so ternary logic can gate compute
+as well as compress weights, which is a distinct source of energy savings from
+weight compression itself.
+
+\subsection{Robotics, autonomy and certification}
+
+Robotics combines the edge constraint with a second requirement that software
+accelerators often ignore: determinism. A controller that occasionally produces
+a different answer for the same input is difficult to certify, whether the
+certification regime is automotive, medical or avionics. Integer arithmetic with
+a fixed order of operations has no such ambiguity. The bit-exact property that
+this project enforces for verification is, in a certification context, a safety
+argument: the deployed artefact can be shown to compute exactly the function
+that was validated.
+
+\subsection{Hardware directions}
+
+The compression argument changes what hardware is worth building. Table~\ref{tab:ternaryhw}
+summarises the directions that are currently active, with an honest note on
+maturity.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Hardware directions that exploit ternary or near-ternary weights.
+  ``Maturity'' distinguishes shipping silicon from research prototypes and
+  analytical proposals.}
+\label{tab:ternaryhw}
+\begin{tabularx}{\linewidth}{@{}l Y l@{}}
+\toprule
+\textbf{Direction} & \textbf{Mechanism} & \textbf{Maturity} \\
+\midrule
+FPGA adder-tree accelerators & weights in ROM, one input per cycle, no DSP &
+  shipping (this work) \\
+RISC-V vector extensions & ternary dot-product instructions, packed 2-bit
+  operands & research silicon \\
+Compute-in-memory (RRAM, PCM, MRAM) & the ternary weight is the conductance
+  state; the crossbar performs the MAC & research prototypes \\
+Ternary content-addressable memory & three-state match for gating and
+  early exit & shipping (networking), research (AI) \\
+Integer-only NPUs & 8-bit or lower activations, high-precision accumulators
+  & shipping \\
+Structured sparsity & zeros map to clock gating and skipped cycles & shipping \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Compute-in-memory is the most interesting of these because it removes the
+memory traffic rather than compressing it: if the weight is a conductance, it
+does not have to be fetched at all. Ternary states are attractive there because
+three levels are easy to program and to distinguish, and because the peripheral
+circuitry can be simple. The catch is the same one this project documents in
+Section~\ref{sec:roadmap}: without a synthesis and measurement path, the
+advantage remains analytical.
+
+\subsection{What has to be true for the transition}
+
+Ternary compression is not a free lunch, and the report would be dishonest if it
+implied otherwise. Four conditions have to hold for a system to benefit:
 
 \begin{enumerate}[leftmargin=*]
-  \item \textbf{Multiplication dominates cost.} In both cases the MAC is the
-    expensive operation; ternary eliminates it.
-  \item \textbf{Memory bandwidth is the wall.} Fewer bits per weight means
-    fewer bytes moved per inference.
-  \item \textbf{Bit-exactness is the hard part.} An LLM serving millions of
-    users cannot tolerate silent numerical drift; the hardware must reproduce
-    the trained model exactly. This project's integer-exact co-design is the
-    same discipline at miniature scale.
+  \item \textbf{Accuracy must survive.} Locally, this design gives up 3.4
+    accuracy points on the MNIST test set relative to a float reference
+    (94.61\% against 98.05\%). At language-model scale the reported gap is
+    smaller, but it is not zero, and it is task-dependent.
+  \item \textbf{Training must be ternary-aware.} Rounding after training is
+    not equivalent; the model has to see the quantiser during optimisation.
+  \item \textbf{The toolchain must exist.} A quantiser without an exporter, a
+    simulator and a bit-exactness check is a research result, not a product
+    component. The work in Section~\ref{sec:pipeline} exists because that gap
+    is where most compression projects fail.
+  \item \textbf{The metric must be the right one.} If the deployment target is a
+    datacentre GPU with abundant bandwidth, ternary weights buy little. If it is
+    a battery-powered sensor, they buy the product.
 \end{enumerate}
 
-The Hadamard rotation that keeps this 784-input accumulator narrow is the
-same rotation that keeps a 4096-wide LLM activation narrow. The selective
-precision that keeps W2 at 16 bits (1.26\% of weights) is the same selective
-precision that keeps the LLM's output projection in higher precision. The
-closed-loop sparsity control that drives 65.9\% zeros is the same control
-that drives BitNet's ternary distribution.
+\subsection{A miniature of the same problem}
 
-\subsection{The energy argument at scale}
-
-A 7B-parameter LLM at FP16 consumes roughly 140\,W during inference on a
-modern GPU. Replacing the linear layers with ternary arithmetic (BitNet-style)
-is projected to reduce this to under 10\,W for the same throughput, because:
+The four techniques that made this design work are not specific to MNIST.
 
 \begin{itemize}[leftmargin=*]
-  \item No floating-point multipliers are instantiated.
-  \item Weight memory traffic drops by $10\times$, and memory traffic
-    dominates dynamic power.
-  \item The remaining additions are cheap enough that the bottleneck becomes
-    the memory interface, not the arithmetic.
+  \item \textbf{Rotation before quantisation.} A Walsh--Hadamard transform
+    spreads the input energy so that the accumulator stays narrow. The same
+    rotation, at a larger block size, is what keeps a wide Transformer
+    activation in range.
+  \item \textbf{Selective precision.} The 32$\times$10 output layer stays at 16
+    bits because it is 1.26\% of the weights and carries most of the dynamic
+    range. The same argument applies to the output projection and the embedding
+    table of a language model.
+  \item \textbf{Closed-loop sparsity.} The threshold is adjusted during training
+    to hold a target zero density (65.86\% here), rather than fixed in advance.
+    This is how a ternary model avoids both collapse and useless density.
+  \item \textbf{Bit-exact co-design.} The hardware is not an approximation of
+    the model. At any scale, the moment the two are allowed to diverge, the
+    verification argument disappears.
 \end{itemize}
 
-This project's energy argument (Section~\ref{sec:energy}) is the same
-argument: count operations and memory accesses, because those are the terms
-that dominate. The FPGA version is small enough to verify bit-exact; the LLM
-version is large enough to matter commercially.
-
+The scale differs by six orders of magnitude; the structure of the problem does
+not. The Nexys~3 version is small enough to verify completely, which is why it
+is a useful place to learn what a ternary datapath actually costs --- and the
+same accounting is what a language-model accelerator needs, one thousand times
+larger.
 \section{Proposed Methodology}
-\label{sec:pipeline}
 \label{sec:pipeline}
 
 \subsection{Architectural decisions}
@@ -549,10 +730,12 @@ Replacing it with a single sequential MAC engine that walks the 784 inputs costs
 one multiplier-equivalent (none, being ternary) and 784 cycles, and fits
 comfortably.
 
-The cost of this decision is latency: 25{,}408 MACs per image at $H{=}32$ is
-about 254\,\textmu s at a 100\,MHz clock. For a human-facing digit recogniser
-this is entirely irrelevant, and the area saving is what makes the design exist
-at all.
+The cost of this decision is latency, and it is smaller than the MAC count
+suggests: the 32 units run in parallel, so the 25{,}408 MACs of an image take
+784 cycles, not 25{,}408. Measured end-to-end, including the rotation, the
+classifier takes 1{,}569 cycles --- 15.7\,\textmu s at 100\,MHz. For a
+human-facing digit recogniser this is entirely irrelevant, and the area saving
+is what makes the design exist at all.
 
 \subsection{Integer-exact derivation}
 
@@ -598,8 +781,9 @@ Augmentation is not free. Table~\ref{tab:aug} shows the cost precisely.
 \begin{table}[H]
 \centering
 \small
-\caption{Effect of augmentation on the deployed network. Freehand accuracy is
-  measured on the synthetic freehand set; MNIST on the real test set.}
+\caption{Effect of augmentation, measured on the models of the width sweep, where
+  the trade is cheapest to see. Freehand accuracy is measured on the synthetic
+  freehand set; MNIST on the real test set.}
 \label{tab:aug}
 \begin{tabularx}{\linewidth}{@{}lY Y@{}}
 \toprule
@@ -618,6 +802,12 @@ that is a good trade depends entirely on the deployment distribution. For a
 benchmark submission the answer is clearly no; for an interactive drawing tool it
 is clearly yes. Both models are retained.
 
+The deployed network takes the middle of that trade rather than either end of
+it: a mild augmentation that costs less than two points of MNIST accuracy
+(94.61\% on the test set, 93.5\% through the pipeline) and buys 84.8\% on
+hand-drawn input, well above both the unaugmented and the wide-augmentation
+variants.
+
 %% ============================================================================
 \section{Hardware Implementation}
 \label{sec:hardware}
@@ -635,7 +825,7 @@ is clearly yes. Both models are retained.
 \node[draw,fill=orange!14,minimum width=16mm,minimum height=12mm,align=center,right=of mac] (hid) {$H{=}32$\\hidden};
 \node[draw,fill=orange!8,minimum width=18mm,minimum height=12mm,align=center,right=of hid] (w2) {$W_2$ 16 bit\\320 weights};
 \node[draw,fill=purple!10,minimum width=17mm,minimum height=12mm,align=center,right=of w2] (am) {\texttt{ArgMax}\\10 classes\\4 bit index};
-\node[draw,fill=gray!8,minimum width=17mm,minimum height=12mm,align=center,below=of mac] (lat) {784 cycles\\0.254 ms};
+\node[draw,fill=gray!8,minimum width=17mm,minimum height=12mm,align=center,below=of mac] (lat) {784 cycles\\15.7\,\textmu s};
 
 \draw[-{Stealth[length=1.8mm]},thick] (px)--(rot);
 \draw[-{Stealth[length=1.8mm]},thick] (rot)--(mac);
@@ -657,11 +847,12 @@ reception, so when it reports completion only the 784-cycle MAC pass remains.
 
 \subsection{Weight memory organisation}
 
-The first layer is stored transposed and 2-bit packed. Transposing means the MAC
-engine reads consecutive addresses to walk a hidden unit's row of weights, which
-turns what would be a strided access into a sequential one --- a large BRAM
-efficiency win. The packed matrix is 50{,}176 bits, which requires the weight
-address bus to be 15 bits wide to address all 25{,}088 words.
+The first layer is stored transposed and 2-bit packed. Transposing means one
+address holds all 32 weights for a single input, so the MAC engine walks
+consecutive addresses as it walks the inputs, turning what would be a strided
+access into a sequential one --- a large BRAM efficiency win. The packed matrix
+is 50{,}176 bits, organised as 784 words of 64 bits. The address bus is
+therefore 10 bits wide: it is indexed by the input, not by the weight.
 
 \subsection{Resource usage}
 
@@ -669,13 +860,15 @@ address bus to be 15 bits wide to address all 25{,}088 words.
 \centering
 \small
 \caption{Resource accounting. Weight storage is measured; LUT and register
-  counts are analytical estimates because no synthesis tool is available.}
+  counts are analytical estimates because no synthesis tool is available. The
+  device line is the Spartan-6 budget of the Nexys~3, the smaller of the two
+  candidate parts; the XC7A100T has 63{,}400 LUTs and 135 BRAM36.}
 \label{tab:resources}
 \begin{tabularx}{\linewidth}{@{}lY Y Y@{}}
 \toprule
 \textbf{Resource} & \textbf{$H{=}16$} & \textbf{$H{=}32$} & \textbf{Basis} \\
 \midrule
-BRAM36 (weights)    & \good 0.06 & \good 0.11 & measured \\
+BRAM36 (weights)    & \good 0.8 & \good 1.5 & measured \\
 BRAM36 (rotation)   & 1 & 1 & estimated \\
 LUTs (MAC engine)   & \est 900 & \est 1{,}200 & estimated \\
 LUTs (rotation)     & \est 400 & \est 400 & estimated \\
@@ -683,29 +876,32 @@ LUTs (control/UI)   & \est 400 & \est 400 & estimated \\
 LUTs (output layer) & \est 350 & \est 350 & estimated \\
 FFs                 & \est 700 & \est 1{,}100 & estimated \\
 \midrule
-Device total        & 15{,}850 LUTs & 15{,}850 LUTs & XC7A100T \\
+Device total        & 15{,}850 LUTs & 15{,}850 LUTs & XC6SLX16 \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 \subsection{Timing}
 
-The sequential MAC engine sustains one MAC per cycle, so latency is exactly the
-MAC count:
+The engine sustains one \emph{input} per cycle across all 32 units, so a MAC
+pass costs 784 cycles regardless of the hidden width. Latency therefore scales
+with the input count, not with the multiply count:
 
 \begin{table}[H]
 \centering
 \small
-\caption{Inference latency from cycle counts. The figure is cycle-accurate for
-  the MAC pass; it excludes rotation and output-layer time, which are small but
-  not zero.}
-\begin{tabularx}{\linewidth}{@{}lYY@{}}
+\caption{Inference latency. The float figure is analytical, at one MAC per
+  cycle; the ternary row is measured in co-simulation, including the rotation
+  pipeline.}
+\begin{tabularx}{\linewidth}{@{}Lrr@{}}
 \toprule
  & \textbf{Ternary} & \textbf{Float} \\
 \midrule
-MAC cycles            & 25{,}408 & 203{,}264 \\
-Latency at 100 MHz    & 0.254 ms & 2.033 ms \\
-Throughput at 100 MHz & 3{,}934 img/s & 492 img/s \\
+MAC operations        & 25{,}408 & 203{,}264 \\
+MAC cycles            & 784 & 203{,}264 \\
+End-to-end compute    & 15.7\,\textmu s (measured) & 2.033 ms (analytical) \\
+With UART framing     & 17.8\,\textmu s & --- \\
+Throughput at 100 MHz & 56{,}000 img/s & 492 img/s \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -743,96 +939,188 @@ Section~\ref{sec:hardware} and the RTL is one-to-one:
   \item \texttt{TernaryMacEngine} is the sequencer and contains no arithmetic.
 \end{itemize}
 
-Line counts are given in the inventory table below, so the relative complexity
-of each block is visible. Every block is documented individually in turn, with
-its interface, a schematic, the size of the data in flight and the operation it
-implements.
-
 \begin{table}[H]
 \centering
 \small
-\caption{Complete VHDL source inventory.}
+\caption{Complete VHDL source inventory: 17 design units (16 entities and one
+  generated package) and six testbenches. Line counts are non-blank source
+  lines.}
 \label{tab:inventory}
-\begin{tabular}{@{}llrl@{}}
+\begin{tabular}{@{}l@{\hspace{12pt}}l@{\hspace{8pt}}r@{\hspace{10pt}}l@{}}
 \toprule
 \textbf{File} & \textbf{Unit} & \textbf{Lines} & \textbf{Role} \\
 \midrule
-\texttt{Nexys3Top.vhd}          & entity          &  92 & board wrapper, top level \\
-\texttt{UARTReceiver.vhd}       & entity          &  86 & serial byte receiver \\
-\texttt{ImagePacketReceiver.vhd}& entity          &  86 & framing to pixel writes \\
-\texttt{SevenSegmentDisplay.vhd}& entity          &  57 & multiplexed 4-digit display \\
-\texttt{NumberRecognition.vhd}   & entity          & 251 & classifier datapath, top of RTL \\
-\texttt{WalshHadamard.vhd}      & entity          & 160 & block-8 rotation \\
-\texttt{TernaryMacEngine.vhd}   & entity          & 115 & sequential multiplier-free MAC (sequencer) \\
-\texttt{NeuronLayer.vhd}       & entity          &  63 & array of \texttt{TernaryNeuron} instances \\
-\texttt{TernaryNeuron.vhd}     & entity          & 103 & one hidden unit: apply, accumulate, activate \\
-\texttt{TernaryApply.vhd}      & entity          &  63 & multiplier-free ternary multiply \\
-\texttt{Accumulator.vhd}        & entity          &  83 & loadable add register, final-cycle clamp \\
-\texttt{Saturate.vhd}          & entity          &  76 & ReLU plus saturation to $[0,127]$ \\
-\texttt{ReLU.vhd}               & entity          &  22 & sign-bit mask only \\
-\texttt{Adder.vhd}              & entity          &  31 & explicit ripple-carry adder \\
-\texttt{DenseLayer.vhd}         & entity          &  74 & combinational output layer, real multiplier \\
-\texttt{ArgMax.vhd}             & entity          &  41 & ten scores to four bits \\
-\texttt{ModelWeights.vhd}       & package         &1016 & generated constant arrays \\
+\texttt{Nexys3Top.vhd}          & entity          &  82 & board wrapper, top level \\
+\texttt{UARTReceiver.vhd}       & entity          &  78 & serial byte receiver \\
+\texttt{ImagePacketReceiver.vhd}& entity          &  79 & framing to pixel writes \\
+\texttt{SevenSegmentDisplay.vhd}& entity          &  51 & anode scan and segment decode \\
+\texttt{NumberRecognition.vhd}  & entity          & 227 & classifier datapath, top of RTL \\
+\texttt{WalshHadamard.vhd}      & entity          & 144 & block-8 rotation \\
+\texttt{TernaryMacEngine.vhd}   & entity          & 105 & MAC sequencer, no arithmetic \\
+\texttt{NeuronLayer.vhd}        & entity          &  59 & array of 32 \texttt{TernaryNeuron} \\
+\texttt{TernaryNeuron.vhd}      & entity          &  94 & one hidden unit \\
+\texttt{TernaryApply.vhd}       & entity          &  57 & multiplier-free ternary product \\
+\texttt{Accumulator.vhd}        & entity          &  77 & loadable add register \\
+\texttt{Saturate.vhd}           & entity          &  69 & ReLU plus saturation to $[0,127]$ \\
+\texttt{ReLU.vhd}               & entity          &  19 & sign-bit mask only \\
+\texttt{Adder.vhd}              & entity          &  28 & explicit ripple-carry adder \\
+\texttt{DenseLayer.vhd}         & entity          &  66 & combinational output layer \\
+\texttt{ArgMax.vhd}             & entity          &  36 & ten scores to four bits \\
+\texttt{ModelWeights.vhd}       & package         &1015 & generated constant arrays \\
 \midrule
-\texttt{tb\_NumberRecognition.vhd}    & testbench & 125 & end-to-end, 2000 images \\
-\texttt{tb\_WalshHadamard.vhd}        & testbench & 111 & rotation vs Python \\
-\texttt{tb\_TernaryMacEngine.vhd}     & testbench & 172 & MAC vs Python \\
-\texttt{tb\_Nexys3Top.vhd}            & testbench & 161 & board level over real framing \\
-\texttt{tb\_UARTReceiver.vhd}         & testbench & 128 & all 256 byte values \\
-\texttt{tb\_SevenSegmentDisplay.vhd}  & testbench & 114 & all ten digit codes \\
+\texttt{tb\_NumberRecognition.vhd}    & testbench & 110 & end-to-end, 2{,}000 images \\
+\texttt{tb\_WalshHadamard.vhd}        & testbench & 101 & rotation vs Python \\
+\texttt{tb\_TernaryMacEngine.vhd}     & testbench & 155 & MAC vs Python \\
+\texttt{tb\_Nexys3Top.vhd}            & testbench & 143 & board level over real framing \\
+\texttt{tb\_UARTReceiver.vhd}          & testbench & 111 & all 256 byte values \\
+\texttt{tb\_SevenSegmentDisplay.vhd}  & testbench & 101 & all ten digit codes \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Board hierarchy}
+In total the design is 2{,}286 lines of RTL --- of which 1{,}015 are the
+generated weight package --- and 721 lines of testbench.
+
+\subsection{Hierarchy: components and subcomponents}
 \label{sec:hierarchy}
 
-Figure~\ref{fig:hierarchy} shows how the design is partitioned. The separation
-that matters is between \emph{frame parsing} (which knows about serial
-protocols) and \emph{classification} (which knows only about pixel writes). The
-classifier has no serial logic in it at all, which is what allows
-\texttt{tb\_NumberRecognition} to drive it directly with image vectors without
-any protocol emulation.
+Figure~\ref{fig:hierarchy} is the containment tree. Every box is an entity or a
+package, and every edge is an instantiation; the numbers on the edges are
+instance counts. The tree is seven levels deep at its deepest point, but the
+arithmetic only appears in the last three levels: everything above them is
+wiring, framing or sequencing.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.60, every node/.style={font=\scriptsize},
-  node distance=7mm and 7mm, box/.style={draw,align=center,minimum height=9mm}]
-% board level
-\node[box,draw,fill=gray!8,minimum width=54mm] (board) {\textbf{Nexys3Top}\\[-1mm]\textit{Artix-7 XC7A100T}};
+\begin{tikzpicture}[font=\scriptsize,>=Stealth,
+  hbox/.style={draw,rounded corners=1pt,align=center,inner sep=2.2pt,
+               minimum height=8.5mm,font=\scriptsize},
+  hedge/.style={semithick,gray!55}]
+  % level 0
+  \node[hbox,fill=gray!14,minimum width=42mm] (top) at (0,0)
+    {\textbf{\texttt{Nexys3Top}}\\{\tiny board wrapper, no arithmetic}};
 
-\node[box,fill=orange!14,below left=9mm and 1mm of board.south west] (uart) {\texttt{UARTReceiver}\\115200 baud\\$86$ lines};
-\node[box,fill=orange!10,below=9mm of board.south] (pkt) {\texttt{ImagePacketReceiver}\\0xA5 sync\\98 bytes};
-\node[box,fill=orange!6,below right=9mm and 1mm of board.south east] (seg) {\texttt{SevenSegmentDisplay}\\4-digit mux\\$57$ lines};
+  % level 1
+  \node[hbox,fill=orange!14,minimum width=28mm] (uart) at (-6.1,-1.8) {\texttt{UARTReceiver}\\{\tiny serial front end}};
+  \node[hbox,fill=orange!10,minimum width=35mm] (pkt)  at (-2.0,-1.8) {\texttt{ImagePacketReceiver}\\{\tiny framing}};
+  \node[hbox,fill=green!10,minimum width=34mm]  (nr)   at (2.2,-1.8)  {\texttt{NumberRecognition}\\{\tiny classifier datapath}};
+  \node[hbox,fill=orange!7,minimum width=34mm]  (seg)  at (6.3,-1.8)  {\texttt{SevenSegmentDisplay}\\{\tiny display}};
 
-\node[box,fill=green!8,below=17mm of pkt] (num) {\textbf{NumberRecognition}\\[-1mm]datapath, $251$ lines};
-\node[box,fill=gray!10,below=9mm of board.south west,xshift=26mm] (clk) {100 MHz\\clock \& reset};
+  \foreach \c in {uart,pkt,nr,seg}
+    \draw[hedge] (top.south) -- (top.south -| \c.north) -- (\c.north);
 
-% inside classifier
-\node[box,fill=blue!10,below left=8mm and 2mm of num.south west] (rot) {\texttt{WalshHadamard}\\[-1mm]block-8, shift 1};
-\node[box,fill=green!18,below=8mm of num.south] (mac) {\texttt{TernaryMacEngine}\\[-1mm]$784$ cycles, \textbf{0 mult}};
-\node[box,fill=green!6,below right=8mm and 2mm of num.south east] (amx) {\texttt{ArgMax}\\[-1mm]10 $\rightarrow$ 4 bits};
-\node[box,fill=gray!14,below=13mm of mac] (mem) {\texttt{ModelWeights}\\[-1mm]$W_1$ 2-bit packed, $W_2$ 16-bit};
+  % level 2 (children of nr)
+  \node[hbox,fill=blue!12,minimum width=28mm]   (wh)  at (-6.0,-3.8) {\texttt{WalshHadamard}\\{\tiny rotation}};
+  \node[hbox,fill=green!18,minimum width=33mm]  (mac) at (-2.1,-3.8) {\texttt{TernaryMacEngine}\\{\tiny sequencer}};
+  \node[hbox,fill=orange!12,minimum width=25mm] (dl)  at (1.9,-3.8)  {\texttt{DenseLayer}\\{\tiny output layer}};
+  \node[hbox,fill=orange!10,minimum width=22mm] (am)  at (5.4,-3.8)  {\texttt{ArgMax}\\{\tiny class select}};
 
-\draw[-{Stealth[length=1.6mm]},thick] (board.south west) |- (uart.north);
-\draw[-{Stealth[length=1.6mm]},thick] (uart) -- (pkt);
-\draw[-{Stealth[length=1.6mm]},thick] (pkt) -- (num);
-\draw[-{Stealth[length=1.6mm]},thick] (num.east) -| (seg.west);
-\draw[-{Stealth[length=1.6mm]}] (clk) -- (uart);
-\draw[-{Stealth[length=1.6mm]}] (clk.east) -- (seg.west);
-\draw[-{Stealth[length=1.6mm]},thick] (num.south west) -- (rot.north);
-\draw[-{Stealth[length=1.6mm]},thick] (num.south) -- (mac.north);
-\draw[-{Stealth[length=1.6mm]},thick] (num.south east) -- (amx.north);
-\draw[-{Stealth[length=1.6mm]},dashed] (mem.north) -- (mac.south);
-\draw[-{Stealth[length=1.6mm]},dashed] (mem.east) -| (amx.south);
+  \coordinate (nrb) at (2.2,-3.0);
+  \draw[hedge] (nr.south) -- (nrb);
+  \foreach \c in {wh,mac,dl,am}
+    \draw[hedge] (nrb) -| (\c.north);
+  \node[font=\tiny,gray!70,anchor=west] at (2.2,-3.15) {1 each};
+
+  % level 3
+  \node[hbox,fill=green!12,minimum width=31mm] (nl) at (-2.1,-5.4) {\texttt{NeuronLayer}\\{\tiny hidden-unit array}};
+  \draw[hedge] (mac.south) -- node[right,font=\tiny,gray!70] {1} (nl.north);
+
+  % level 4
+  \node[hbox,fill=green!8,minimum width=34mm] (tn) at (-2.1,-7.0) {\texttt{TernaryNeuron}\\{\tiny one hidden unit}};
+  \draw[hedge] (nl.south) -- node[right,font=\tiny,gray!70] {$32\times$} (tn.north);
+
+  % level 5
+  \node[hbox,fill=blue!10,minimum width=28mm]   (ap) at (-4.9,-8.8) {\texttt{TernaryApply}\\{\tiny ternary product}};
+  \node[hbox,fill=green!14,minimum width=28mm]  (ac) at (-1.5,-8.8) {\texttt{Accumulator}\\{\tiny running sum}};
+  \node[hbox,fill=orange!14,minimum width=25mm] (sa) at (2.2,-8.8)  {\texttt{Saturate}\\{\tiny ReLU + clamp}};
+
+  \coordinate (tnb) at (-2.1,-8.0);
+  \draw[hedge] (tn.south) -- (tnb);
+  \foreach \c in {ap,ac,sa}
+    \draw[hedge] (tnb) -| (\c.north);
+  \node[font=\tiny,gray!70,anchor=west] at (-2.0,-8.15) {1 each};
+
+  % level 6
+  \node[hbox,fill=gray!12,minimum width=18mm]    (ad) at (-1.5,-10.4) {\texttt{Adder}\\{\tiny ripple carry}};
+  \node[hbox,fill=gray!12,minimum width=17mm]    (rl) at (2.2,-10.4)  {\texttt{ReLU}\\{\tiny sign mask}};
+  \draw[hedge] (ac.south) -- node[right,font=\tiny,gray!70] {1} (ad.north);
+  \draw[hedge] (sa.south) -- node[right,font=\tiny,gray!70] {1} (rl.north);
 \end{tikzpicture}
-\caption{Design hierarchy. Solid lines are data paths; dashed lines are weight
-reads. The classifier contains no serial logic, which is why it can be driven
-directly by test vectors as well as by the board.}
+\caption{Containment tree of the design. Edges are instantiations and the
+  labels are instance counts. The arithmetic lives entirely in the leaves at the
+  bottom; every block above them is wiring, protocol handling or sequencing. The
+  weight package (\texttt{ModelWeights}) is not an entity and is therefore shown
+  separately in Figure~\ref{fig:modelweights}.}
 \label{fig:hierarchy}
 \end{figure}
 
+Table~\ref{tab:instances} lists the same tree as data, and
+Table~\ref{tab:support} lists the logic that does not deserve an entity of its
+own but is nevertheless part of the design: counters, timers, state machines and
+comparators. Nothing else is instantiated.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Complete instantiation summary. Every parent--child pair in the design
+  appears exactly once.}
+\label{tab:instances}
+\begin{tabularx}{\linewidth}{@{}l@{\hspace{14pt}}l@{\hspace{8pt}}r@{\hspace{10pt}}L@{}}
+\toprule
+\textbf{Parent} & \textbf{Child} & \textbf{Count} & \textbf{Purpose} \\
+\midrule
+\texttt{Nexys3Top}          & \texttt{UARTReceiver}         & 1  & serial byte recovery \\
+\texttt{Nexys3Top}          & \texttt{ImagePacketReceiver}  & 1  & sync framing and pixel unpacking \\
+\texttt{Nexys3Top}          & \texttt{NumberRecognition}    & 1  & classification \\
+\texttt{Nexys3Top}          & \texttt{SevenSegmentDisplay}  & 1  & digit display \\
+\texttt{NumberRecognition}  & \texttt{WalshHadamard}        & 1  & block-8 rotation of the pixel bus \\
+\texttt{NumberRecognition}  & \texttt{TernaryMacEngine}     & 1  & first-layer MAC pass \\
+\texttt{NumberRecognition}  & \texttt{DenseLayer}           & 1  & second layer, combinational \\
+\texttt{NumberRecognition}  & \texttt{ArgMax}               & 1  & class selection \\
+\texttt{TernaryMacEngine}   & \texttt{NeuronLayer}          & 1  & array of hidden units \\
+\texttt{NeuronLayer}        & \texttt{TernaryNeuron}        & 32 & one per hidden unit \\
+\texttt{TernaryNeuron}      & \texttt{TernaryApply}         & 1  & $T(W)\cdot X$ \\
+\texttt{TernaryNeuron}      & \texttt{Accumulator}          & 1  & running partial sum \\
+\texttt{TernaryNeuron}      & \texttt{Saturate}             & 1  & ReLU and clamp \\
+\texttt{Accumulator}        & \texttt{Adder}                & 1  & ripple-carry sum \\
+\texttt{Saturate}           & \texttt{ReLU}                 & 1  & sign mask \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Supporting logic constructs that are implemented inline rather than as
+  separate entities. Widths are the declared ranges in the RTL.}
+\label{tab:support}
+\begin{tabularx}{\linewidth}{@{}l l l Y@{}}
+\toprule
+\textbf{Construct} & \textbf{Unit} & \textbf{Width} & \textbf{Function} \\
+\midrule
+Baud timer        & \texttt{UARTReceiver}       & 10 bit & 868 clocks per bit at 100\,MHz/115200 \\
+Receive FSM       & \texttt{UARTReceiver}       & 2 bit  & IDLE, START, DATA, STOP \\
+Bit index         & \texttt{UARTReceiver}       & 3 bit  & eight data bits \\
+Sync matcher      & \texttt{ImagePacketReceiver}& 8 bit  & detect the \texttt{0xA5} start byte \\
+Byte counter      & \texttt{ImagePacketReceiver}& 7 bit  & 98 payload bytes \\
+Bit counter       & \texttt{ImagePacketReceiver}& 3 bit  & eight pixels per byte \\
+Pixel counter     & \texttt{ImagePacketReceiver}& 10 bit & addresses 0--783 \\
+Scan divider      & \texttt{SevenSegmentDisplay} & 15 bit & 25{,}000-clock anode refresh tick \\
+Anode index       & \texttt{SevenSegmentDisplay} & 2 bit  & one of four anodes \\
+Control FSM       & \texttt{NumberRecognition}  & 2 bit  & IDLE, MAC\_RUN, DONE \\
+MAC index         & \texttt{TernaryMacEngine}   & 10 bit & walks inputs 0--783 \\
+Clamp comparator  & \texttt{Saturate}           & 1 bit  & $\texttt{Value} > \texttt{HIDDEN\_MAX}$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two conventions are used in every schematic that follows. Inputs enter from the
+left and outputs leave to the right, each on its own row, so that a multi-port
+block never degenerates into a single crowded line; and the second line of every
+port box gives the port width in bits, either as a number or as a product such
+as $784\times4$.
+
+%% ----------------------------------------------------------------------------
 \subsection{Board-level components}
 \label{sec:board}
 
@@ -841,13 +1129,16 @@ These components contain no arithmetic.
 \subsubsection{\texttt{Nexys3Top.vhd} --- board wrapper}
 \label{sub:nexys3top}
 
-The top level. Instantiates the serial receiver, the packet framer, the
-classifier and the display, and provides the 100\,MHz clock from the Nexys~3
-on-board oscillator. It contains no algorithmic logic.
+The top level. It instantiates the serial receiver, the packet framer, the
+classifier and the display, and takes the 100\,MHz clock from the on-board
+oscillator. It contains no algorithmic logic and no state of its own.
+
+\textbf{Contains.} One \texttt{UARTReceiver}, one \texttt{ImagePacketReceiver},
+one \texttt{NumberRecognition}, one \texttt{SevenSegmentDisplay}.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -861,31 +1152,63 @@ on-board oscillator. It contains no algorithmic logic.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=gray!14,align=center] (board) {\texttt{Nexys3Top}};
-  \node[draw] (clk) [left=of board] {clk100};
-  \node[draw] (rx) [left=of clk] {RsRx};
-  \node[draw] (seg) [right=of board] {seg};
-  \node[draw] (an) [right=of seg] {an};
-  \draw[->] (rx) -- (board);
-  \draw[->] (clk) -- (board);
-  \draw[->] (board) -- (seg);
-  \draw[->] (seg) -- (an);
+\begin{tikzpicture}
+  \node[chip,fill=gray!12,minimum width=46mm,minimum height=30mm] (b) at (0,0)
+    {\texttt{Nexys3Top}\\[1mm]{\tiny board wrapper}\\{\tiny no arithmetic}};
+  \foreach \nm/\pw/\y [count=\i] in {clk100/1/0.6, RsRx/1/-0.6} {
+    \node[pin] (i\i) at (-5.9,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \foreach \nm/\pw/\y [count=\i] in {seg/7/0.6, an/4/-0.6} {
+    \node[pout] (o\i) at (5.9,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
 \end{tikzpicture}
-\caption{Nexys3Top block diagram.}
+\caption{\texttt{Nexys3Top}: two inputs, two outputs, no state.}
 \label{fig:nexys3top}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[font=\scriptsize,>=Stealth,
+  hbox/.style={draw,rounded corners=1pt,align=center,inner sep=2.5pt,
+               minimum height=11mm,font=\scriptsize}]
+  \node[hbox,fill=orange!14,minimum width=25mm] (uart) at (-5.4,0) {\texttt{UARTReceiver}\\{\tiny byte stream}};
+  \node[hbox,fill=orange!10,minimum width=28mm] (pkt)  at (-1.6,0) {\texttt{ImagePacketReceiver}\\{\tiny pixel writes}};
+  \node[hbox,fill=green!10,minimum width=34mm]  (nr)   at (2.6,0)  {\texttt{NumberRecognition}\\{\tiny classifier}};
+  \node[hbox,fill=orange!7,minimum width=27mm]  (seg)  at (6.4,0)  {\texttt{SevenSegmentDisplay}\\{\tiny display}};
+
+  \draw[sig] (uart.east) -- node[above,font=\tiny]{8-bit bytes} (pkt.west);
+  \draw[sig] (pkt.east) -- node[above,font=\tiny]{we + addr + data} (nr.west);
+  \draw[sig] (nr.east) -- node[above,font=\tiny]{digit (4)} (seg.west);
+
+  \node[hbox,fill=gray!12,minimum width=30mm] (mw) at (2.6,2.6) {\texttt{ModelWeights}\\{\tiny generated package}};
+  \draw[sig,dashed] (mw.south) -- node[right,font=\tiny]{weights} (nr.north);
+
+  \node[font=\tiny] (clk) at (-6.6,-2.4) {100\,MHz};
+  \draw[semithick,gray!60] (clk.east) -- (7.6,-2.4);
+  \foreach \c in {uart,pkt,nr,seg}
+    \draw[semithick,gray!60] (\c.south) -- (\c.south |- 0,-2.4);
+\end{tikzpicture}
+\caption{Board-level signal flow. Solid arrows are data, the dashed arrow is a
+  constant read, and the grey rail is the clock distributed to all four units.
+  The classifier is the only block that is not protocol-specific.}
+\label{fig:boardflow}
 \end{figure}
 
 \subsubsection{\texttt{UARTReceiver.vhd}}
 \label{sub:uart}
 
-A 115200-baud serial receiver. It shifts bits in on \texttt{serial\_in},
-assembles \texttt{data\_out} and pulses \texttt{data\_valid}.
+A 115200-baud serial receiver. It oversamples the start bit at half a bit
+period, then samples the eight data bits one bit period apart, assembles
+\texttt{data\_out} and pulses \texttt{data\_valid} for one clock.
+
+\textbf{Contains.} A four-state receive FSM, a 10-bit baud timer and a 3-bit bit
+index (Table~\ref{tab:support}).
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -899,33 +1222,37 @@ assembles \texttt{data\_out} and pulses \texttt{data\_valid}.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=orange!14,align=center] (uart) {\texttt{UARTReceiver}};
-  \node[draw] (clk) [left=of uart] {clk};
-  \node[draw] (rx) [left=of clk] {serial\_in};
-  \node[draw] (dout) [right=of uart] {data\_out};
-  \node[draw] (dvalid) [right=of dout] {data\_valid};
-  \draw[->] (rx) -- (uart);
-  \draw[->] (clk) -- (uart);
-  \draw[->] (uart) -- (dout);
-  \draw[->] (uart) -- (dvalid);
+\begin{tikzpicture}
+  \node[chip,fill=orange!14,minimum width=46mm,minimum height=28mm] (b) at (0,0)
+    {\texttt{UARTReceiver}\\[1mm]{\tiny 115200 baud, 8N1}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/0.55, serial\_in/1/-0.55} {
+    \node[pin] (i\i) at (-5.9,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \foreach \nm/\pw/\y [count=\i] in {data\_out/8/0.55, data\_valid/1/-0.55} {
+    \node[pout] (o\i) at (5.9,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
 \end{tikzpicture}
-\caption{UARTReceiver block diagram.}
+\caption{\texttt{UARTReceiver}: serial in, parallel byte plus strobe out.}
 \label{fig:uart}
 \end{figure}
 
 \subsubsection{\texttt{ImagePacketReceiver.vhd}}
 \label{sub:pkt}
 
-Converts the byte stream into pixel writes. It looks for the 0xA5 sync byte,
-then consumes the following 98 bytes, unpacking one pixel per bit, least
+Converts the byte stream into pixel writes. It looks for the \texttt{0xA5} sync
+byte, then consumes the following 98 bytes, unpacking one pixel per bit, least
 significant bit first, and driving \texttt{pixel\_we}, \texttt{pixel\_addr} and
 \texttt{pixel\_data}. A write to address 0 marks the start of a new image.
 
+\textbf{Contains.} An 8-bit sync matcher, a 7-bit byte counter, a 3-bit bit
+counter, a 10-bit pixel counter and an 8-bit shift register
+(Table~\ref{tab:support}).
+
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -942,43 +1269,45 @@ significant bit first, and driving \texttt{pixel\_we}, \texttt{pixel\_addr} and
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.60, every node/.style={font=\scriptsize},
-  node distance=4mm and 4mm]
-  \node[draw,fill=orange!10,align=center] (pkt) {\texttt{ImagePacketReceiver}};
-  \node[draw] (clk) [left=of pkt] {clk};
-  \node[draw] (bytein) [left=of clk] {byte\_in};
-  \node[draw] (bvalid) [left=of bytein] {byte\_valid};
-  \node[draw] (we) [right=of pkt] {pixel\_we};
-  \node[draw] (addr) [right=of we] {pixel\_addr};
-  \node[draw] (data) [right=of addr] {pixel\_data};
-  \node[draw] (done) [right=of data] {image\_done};
-  \draw[->] (bytein) -- (pkt);
-  \draw[->] (clk) -- (pkt);
-  \draw[->] (bvalid) -- (pkt);
-  \draw[->] (pkt) -- (we);
-  \draw[->] (pkt) -- (addr);
-  \draw[->] (pkt) -- (data);
-  \draw[->] (pkt) -- (done);
+\begin{tikzpicture}
+  \node[chip,fill=orange!10,minimum width=48mm,minimum height=44mm] (b) at (0,0)
+    {\texttt{ImagePacketReceiver}\\[1mm]{\tiny 0xA5 sync, 98 bytes}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/1.1, byte\_in/8/0.0, byte\_valid/1/-1.1} {
+    \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \foreach \nm/\pw/\y [count=\i] in {pixel\_we/1/1.65, pixel\_addr/10/0.55,
+                                     pixel\_data/1/-0.55, image\_done/1/-1.65} {
+    \node[pout] (o\i) at (6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
 \end{tikzpicture}
-\caption{ImagePacketReceiver block diagram.}
+\caption{\texttt{ImagePacketReceiver}: three inputs, four outputs, all on
+  separate rows.}
 \label{fig:pkt}
 \end{figure}
 
 \subsubsection{\texttt{SevenSegmentDisplay.vhd}}
 \label{sub:seg}
 
-Drives the Nexys~3's four-digit display with active-low cathodes. It multiplexes
-a single 4-bit digit input across the four anodes and presents the standard
-segment pattern.
+Drives the Nexys~3's seven-segment display with active-low cathodes. A 15-bit
+divider produces a 4\,kHz refresh tick and a 2-bit anode index scans the four
+positions. In the deployed design only the rightmost position carries the digit
+pattern; the other three anodes are blanked, because a single digit is the
+required output. A four-lane scan would need four patterns, which is a one-line
+change to the anode decoder.
+
+\textbf{Contains.} A 15-bit scan divider and a 2-bit anode index
+(Table~\ref{tab:support}).
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
 \texttt{clk}      & 1  & system clock \\
-\texttt{digit}    & 4  & digit to display \\
+\texttt{digit}    & 4  & digit to display (0--9) \\
 \texttt{segments} & 8  & segment cathodes (active-low) \\
 \texttt{anodes}   & 4  & digit anodes (active-low) \\
 \bottomrule
@@ -987,37 +1316,40 @@ segment pattern.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=orange!6,align=center] (seg) {\texttt{SevenSegmentDisplay}};
-  \node[draw] (clk) [left=of seg] {clk};
-  \node[draw] (digit) [left=of clk] {digit};
-  \node[draw] (segments) [right=of seg] {segments};
-  \node[draw] (anodes) [right=of segments] {anodes};
-  \draw[->] (digit) -- (seg);
-  \draw[->] (clk) -- (seg);
-  \draw[->] (seg) -- (segments);
-  \draw[->] (seg) -- (anodes);
+\begin{tikzpicture}
+  \node[chip,fill=orange!7,minimum width=48mm,minimum height=30mm] (b) at (0,0)
+    {\texttt{SevenSegmentDisplay}\\[1mm]{\tiny active-low, 4\,kHz scan}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/0.6, digit/4/-0.6} {
+    \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \foreach \nm/\pw/\y [count=\i] in {segments/8/0.6, anodes/4/-0.6} {
+    \node[pout] (o\i) at (6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
 \end{tikzpicture}
-\caption{SevenSegmentDisplay block diagram.}
+\caption{\texttt{SevenSegmentDisplay}: digit in, cathode and anode drive out.}
 \label{fig:seg}
 \end{figure}
 
+%% ----------------------------------------------------------------------------
 \subsection{The classifier datapath}
 \label{sec:classifier}
 
 The classifier is the algorithmic core. It takes a serial pixel bus and produces
-a four-bit class index.
+a four-bit class index, and it is the only design unit that contains algorithmic
+structure.
 
 \subsubsection{\texttt{NumberRecognition.vhd} --- classifier datapath}
 \label{sub:numberrecognition}
 
-The largest design unit and the only one containing algorithmic structure. Its
-key generics are:
+The largest design unit. It instantiates the rotation, the MAC engine, the
+output layer and \texttt{ArgMax}, and sequences them with a three-state machine.
+Its constants are:
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Constant} & \textbf{Value} & \textbf{Purpose} \\
 \midrule
@@ -1025,6 +1357,7 @@ key generics are:
 \texttt{N\_HIDDEN}    & 32  & hidden units \\
 \texttt{N\_CLASSES}   & 10  & output classes \\
 \texttt{ACC\_WIDTH}   & 32  & MAC accumulator \\
+\texttt{HIDDEN\_WIDTH}& 8   & hidden activation \\
 \texttt{X\_WIDTH}     & 4   & rotated input bus \\
 \texttt{ROT\_BLOCK}   & 8   & Hadamard block size \\
 \texttt{ROT\_SHIFT}   & 1   & post-rotation arithmetic shift \\
@@ -1033,38 +1366,41 @@ key generics are:
 \end{tabularx}
 \end{center}
 
+\textbf{Contains.} One \texttt{WalshHadamard}, one \texttt{TernaryMacEngine},
+one \texttt{DenseLayer} and one \texttt{ArgMax}.
+
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
-\texttt{clk}               & 1  & system clock \\
-\texttt{pixel\_write\_enable}& 1 & pixel write strobe \\
-\texttt{pixel\_write\_addr} & 10 & pixel address (0--783) \\
-\texttt{pixel\_write\_data} & 1  & binary pixel value \\
-\texttt{digit}             & 4  & predicted digit (0--9) \\
+\texttt{clk}                  & 1  & system clock \\
+\texttt{pixel\_write\_enable} & 1  & pixel write strobe \\
+\texttt{pixel\_write\_addr}   & 10 & pixel address (0--783) \\
+\texttt{pixel\_write\_data}   & 1  & binary pixel value \\
+\texttt{digit}                & 4  & predicted digit (0--9) \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=green!8,align=center] (nr) {\texttt{NumberRecognition}};
-  \node[draw] (clk) [left=of nr] {clk};
-  \node[draw] (we) [left=of clk] {pixel\_we};
-  \node[draw] (addr) [left=of we] {pixel\_addr};
-  \node[draw] (data) [left=of addr] {pixel\_data};
-  \node[draw] (digit) [right=of nr] {digit};
-  \draw[->] (we) -- (nr);
-  \draw[->] (clk) -- (nr);
-  \draw[->] (addr) -- (nr);
-  \draw[->] (data) -- (nr);
-  \draw[->] (nr) -- (digit);
+\begin{tikzpicture}
+  \node[chip,fill=green!8,minimum width=50mm,minimum height=44mm] (b) at (0,0)
+    {\texttt{NumberRecognition}\\[1mm]{\tiny Walsh + MAC + Dense + ArgMax}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/1.65,
+      pixel\_write\_enable/1/0.55,
+      pixel\_write\_addr/10/-0.55,
+      pixel\_write\_data/1/-1.65} {
+    \node[pin,minimum width=32mm] (i\i) at (-6.2,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \node[pout] (o1) at (6.2,0) {\texttt{digit}\\[-0.6mm]{\tiny 4 bit}};
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{NumberRecognition block diagram.}
+\caption{\texttt{NumberRecognition}: four inputs, one output. The internal
+  composition is Figure~\ref{fig:hierarchy}.}
 \label{fig:numberrecognition}
 \end{figure}
 
@@ -1073,35 +1409,35 @@ reception, so when it reports completion only the MAC pass remains:
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.78, every node/.style={font=\small},
-  node distance=14mm and 20mm]
-\node[draw,rounded corners,fill=blue!8,minimum width=28mm,minimum height=9mm,align=center] (idle) {\texttt{IDLE}};
-\node[draw,rounded corners,fill=green!14,minimum width=30mm,minimum height=9mm,align=center,right=of idle] (mac) {\texttt{MAC\_RUN}};
-\node[draw,rounded corners,fill=purple!10,minimum width=28mm,minimum height=9mm,align=center,right=of mac] (done) {\texttt{DONE}};
-\node[below=11mm of mac,align=center,font=\scriptsize,text width=52mm] (note) {A write to pixel address 0 asserts \texttt{rot\_start}, beginning the
-rotation. \texttt{rot\_done} then strobes \texttt{mac\_start}. The MAC engine
-asserts \texttt{done} after 784 cycles, at which point the output layer and
-\texttt{ArgMax} are combinational and already settled.};
-\draw[-{Stealth[length=2mm]},thick] (idle) -- node[above,font=\scriptsize] {$\texttt{rot\_done}$} (mac);
-\draw[-{Stealth[length=2mm]},thick] (mac) -- node[above,font=\scriptsize] {\texttt{mac\_done}} (done);
-\draw[-{Stealth[length=2mm]},thick] (done.south) -- ++(0,-6mm) -| (idle.south);
-\draw[-{Stealth[length=2mm]},thick] (idle.north) -- node[right,font=\scriptsize] {pixel addr 0} ++(0,9mm);
+\begin{tikzpicture}[font=\small,>=Stealth,
+  st/.style={draw,rounded corners,align=center,minimum width=28mm,
+             minimum height=9mm,font=\small}]
+  \node[st,fill=blue!8]   (idle) at (0,0)      {\texttt{IDLE}};
+  \node[st,fill=green!14] (mac)  at (4.6,0)    {\texttt{MAC\_RUN}};
+  \node[st,fill=purple!10](done) at (9.2,0)    {\texttt{DONE}};
+  \draw[sig,thick] (idle) -- node[above,font=\scriptsize] {\texttt{rot\_done}} (mac);
+  \draw[sig,thick] (mac) -- node[above,font=\scriptsize] {\texttt{mac\_done}} (done);
+  \draw[sig,thick] (done.south) -- ++(0,-0.8) -| node[pos=0.25,below,font=\scriptsize] {next image} (idle.south);
 \end{tikzpicture}
-\caption{Control finite state machine.}
+\caption{Control finite state machine. A write to pixel address 0 asserts
+  \texttt{rot\_start}; \texttt{rot\_done} strobes \texttt{mac\_start}; the MAC
+  engine asserts \texttt{done} after 784 cycles, at which point
+  \texttt{DenseLayer} and \texttt{ArgMax} are combinational and already settled.}
 \label{fig:fsm}
 \end{figure}
 
 \subsubsection{\texttt{WalshHadamard.vhd} --- block-8 rotation}
 \label{sub:walsh}
 
-A streaming Walsh--Hadamard transform of the pixel bus. Its generics are
-\texttt{N\_INPUTS} (784), \texttt{BLOCK\_SIZE}, \texttt{SHIFT},
-\texttt{SUM\_WIDTH} and \texttt{OUT\_WIDTH}. It consumes one pixel per cycle and
-emits the rotated bus with \texttt{out\_valid}.
+A streaming Walsh--Hadamard transform of the pixel bus. It consumes one pixel per
+cycle, accumulates 64 signed sums for the eight-pixel blocks, and emits the
+rotated bus with \texttt{out\_valid}. The generics are \texttt{N\_INPUTS}
+(784), \texttt{BLOCK\_SIZE} (8), \texttt{SHIFT} (1), \texttt{SUM\_WIDTH} (6)
+and \texttt{OUT\_WIDTH} (4).
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1118,25 +1454,22 @@ emits the rotated bus with \texttt{out\_valid}.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.70, every node/.style={font=\scriptsize},
-  node distance=5mm and 5mm]
-  \node[draw,fill=blue!10,align=center] (wh) {\texttt{WalshHadamard}};
-  \node[draw] (clk) [left=of wh] {clk};
-  \node[draw] (start) [left=of clk] {start};
-  \node[draw] (valid) [left=of start] {in\_valid};
-  \node[draw] (idx) [left=of valid] {in\_index};
-  \node[draw] (data) [left=of idx] {in\_data};
-  \node[draw] (oval) [right=of wh] {out\_valid};
-  \node[draw] (odata) [right=of oval] {out\_data};
-  \draw[->] (start) -- (wh);
-  \draw[->] (clk) -- (wh);
-  \draw[->] (valid) -- (wh);
-  \draw[->] (idx) -- (wh);
-  \draw[->] (data) -- (wh);
-  \draw[->] (wh) -- (oval);
-  \draw[->] (wh) -- (odata);
+\begin{tikzpicture}
+  \node[chip,fill=blue!10,minimum width=46mm,minimum height=52mm] (b) at (0,0)
+    {\texttt{WalshHadamard}\\[1mm]{\tiny block-8, shift 1}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/2.1, start/1/1.05, in\_valid/1/0.0,
+                                     in\_index/10/-1.05, in\_data/1/-2.1} {
+    \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \foreach \nm/\pw/\y [count=\i] in {out\_valid/1/0.6, out\_data/3136/0.0} {
+    \node[pout] (o\i) at (6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
+  \node[font=\tiny,gray!70,align=center] at (2.9,-2.1) {$784\times4$};
 \end{tikzpicture}
-\caption{WalshHadamard block diagram.}
+\caption{\texttt{WalshHadamard}: five inputs, two outputs. The output is a
+  3{,}136-bit bus, not a scalar.}
 \label{fig:walsh}
 \end{figure}
 
@@ -1144,42 +1477,56 @@ Figure~\ref{fig:butterfly} shows one block-8 butterfly.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.80, every node/.style={font=\scriptsize}]
-\node[align=center] (s1l) at (0,1.5) {stage 1\\[1mm]pair sums};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1a) at (-1.1,0) {$x_0{+}x_1$};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1b) at (1.1,0) {$x_2{+}x_3$};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1c) at (-2.2,-1.3) {$x_4{+}x_5$};
-\node[draw,fill=blue!8,minimum width=13mm,minimum height=7mm] (p1d) at (2.2,-1.3) {$x_6{+}x_7$};
-\node[align=center,font=\tiny] at (-1.65,-1.9) {differences go to stage 2};
-\node[draw,fill=green!12,minimum width=15mm,minimum height=7mm] (p2a) at (-1.65,-2.9) {$a{+}b$};
-\node[draw,fill=green!12,minimum width=15mm,minimum height=7mm] (p2b) at (1.65,-2.9) {$a{-}b$};
-\node[align=center,font=\tiny] at (0,-3.4) {stage 2: cross-pair};
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o0) at (-2.2,-4.6) {$H_0$};
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o1) at (-1.1,-4.6) {$H_1$};
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o2) at (1.1,-4.6) {$H_2$};
-\node[draw,fill=orange!16,minimum width=15mm,minimum height=7mm] (o3) at (2.2,-4.6) {$H_3$};
-\draw[-{Stealth[length=1.5mm]}] (p1a)--(p2a);
-\draw[-{Stealth[length=1.5mm]}] (p1b)--(p2a);
-\draw[-{Stealth[length=1.5mm]}] (p1c)--(p2b);
-\draw[-{Stealth[length=1.5mm]}] (p1d)--(p2b);
-\draw[-{Stealth[length=1.5mm]}] (p2a)--(o0);
-\draw[-{Stealth[length=1.5mm]}] (p2a.east) -- ++(4mm,0) |- (o1.north);
-\draw[-{Stealth[length=1.5mm]}] (p2b.west) -- ++(-4mm,0) |- (o2.north);
-\draw[-{Stealth[length=1.5mm]}] (p2b)--(o3);
-\node[align=center,font=\tiny,text width=30mm] at (0,-5.8) {signed sums held in \texttt{SUM\_WIDTH} $=$ 6 bits, shifted right by \texttt{SHIFT} $=$ 1 into \texttt{X\_WIDTH} $=$ 4 bits};
+\begin{tikzpicture}[font=\scriptsize,>=Stealth,
+  op/.style={draw,rounded corners=1pt,minimum width=15mm,minimum height=7mm,
+             align=center,font=\scriptsize}]
+  % stage 1
+  \node[op,fill=blue!8]    (p1) at (-3.4,0)  {$x_0{+}x_1$};
+  \node[op,fill=blue!8]    (p2) at (-1.0,0)  {$x_2{+}x_3$};
+  \node[op,fill=blue!8]    (p3) at ( 1.0,0)  {$x_4{+}x_5$};
+  \node[op,fill=blue!8]    (p4) at ( 3.4,0)  {$x_6{+}x_7$};
+  % stage 2
+  \node[op,fill=green!12]  (q1) at (-3.4,-2.6) {$a{+}b$};
+  \node[op,fill=green!12]  (q2) at (-1.0,-2.6) {$a{-}b$};
+  \node[op,fill=green!12]  (q3) at ( 1.0,-2.6) {$c{+}d$};
+  \node[op,fill=green!12]  (q4) at ( 3.4,-2.6) {$c{-}d$};
+  % outputs
+  \node[op,fill=orange!16] (h0) at (-4.3,-5.2) {$H_0$};
+  \node[op,fill=orange!16] (h1) at (-2.5,-5.2) {$H_1$};
+  \node[op,fill=orange!16] (h2) at ( 1.0,-5.2) {$H_2$};
+  \node[op,fill=orange!16] (h3) at ( 2.8,-5.2) {$H_3$};
+
+  \draw[sig] (p1.south) -- (q1.north);
+  \draw[sig] (p2.south) -- (q2.north);
+  \draw[sig] (p3.south) -- (q3.north);
+  \draw[sig] (p4.south) -- (q4.north);
+  \draw[sig] (q1.south) -- (h0.north);
+  \draw[sig] (q1.south) -- (h1.north);
+  \draw[sig] (q2.south) -- (h0.north);
+  \draw[sig] (q2.south) -- (h1.north);
+  \draw[sig] (q3.south) -- (h2.north);
+  \draw[sig] (q3.south) -- (h3.north);
+  \draw[sig] (q4.south) -- (h2.north);
+  \draw[sig] (q4.south) -- (h3.north);
+
+  \node[font=\tiny,align=center] at (0,1.0)  {stage 1: pair sums and differences};
+  \node[font=\tiny,align=center] at (0,-1.55) {stage 2: cross-pair sums};
+  \node[font=\tiny,align=center,text width=42mm] at (0,-6.3)
+    {signed sums held in 6 bits, shifted right by one into the 4-bit bus};
 \end{tikzpicture}
-\caption{Block-8 Hadamard butterfly structure. Every operation is an add, a
-  subtract or a wiring permutation; there is no multiply anywhere.}
+\caption{Block-8 Hadamard butterfly. Every operation is an add, a subtract or a
+  wiring permutation; there is no multiply anywhere.}
 \label{fig:butterfly}
 \end{figure}
 
+%% ----------------------------------------------------------------------------
 \subsection{The multiplier-free MAC blocks}
 \label{sec:macblocks}
 
 The multiplier-free multiply is decomposed into blocks, each of which is small
 enough to be synthesized and tested in isolation.
 
-\subsubsection{\texttt{TernaryMacEngine.vhd} --- the sequential multiplier-free MAC}
+\subsubsection{\texttt{TernaryMacEngine.vhd} --- the sequential MAC}
 \label{sub:mac}
 
 The component that justifies the whole design. A fully parallel first layer at
@@ -1187,9 +1534,12 @@ $784 \times 32$ would need 25{,}088 accumulators and roughly 50{,}000 LUTs,
 against 15{,}850 available. Streaming one input per cycle instead needs one
 accumulator register file of $N_{\text{hidden}}$ entries.
 
+\textbf{Contains.} One \texttt{NeuronLayer}; the engine itself is a 10-bit input
+pointer, a start/done handshake and the final-cycle strobe, with no arithmetic.
+
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1207,20 +1557,23 @@ accumulator register file of $N_{\text{hidden}}$ entries.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.80, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw,rounded corners,fill=green!14,align=center] (ctrl) {\texttt{TernaryMacEngine}\\controller, no arithmetic};
-  \node[draw] (idx) [right=of ctrl] {$k$};
-  \node[draw] (addr) [right=of idx] {$w\_read\_addr$};
-  \node[draw] (start) [right=of ctrl] {start};
-  \node[draw] (done) [right=of ctrl] {done};
-  \draw[->] (ctrl) -- (addr);
-  \draw[->] (ctrl) -- (start);
-  \draw[->] (ctrl) -- (done);
+\begin{tikzpicture}
+  \node[chip,fill=green!14,minimum width=48mm,minimum height=46mm] (b) at (0,0)
+    {\texttt{TernaryMacEngine}\\[1mm]{\tiny sequencer + NeuronLayer}\\[-0.4mm]{\tiny no arithmetic}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/1.65, start/1/0.55,
+                                     x/3136/-0.55, w\_read\_data/64/-1.65} {
+    \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \foreach \nm/\pw/\y [count=\i] in {busy/1/1.65, done/1/0.55,
+                                     w\_read\_addr/10/-0.55, hidden/256/-1.65} {
+    \node[pout] (o\i) at (6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
 \end{tikzpicture}
-\caption{The MAC engine is a sequencer. The address generator walks the inputs;
-the arithmetic lives one level down in the neuron blocks.}
-\label{fig:macseq}
+\caption{\texttt{TernaryMacEngine}: the address generator walks the inputs and
+  the arithmetic lives one level down in \texttt{NeuronLayer}.}
+\label{fig:mac}
 \end{figure}
 
 \subsubsection{\texttt{NeuronLayer.vhd} --- the hidden-unit array}
@@ -1230,9 +1583,13 @@ This is the ``layer'' block. It holds no logic of its own beyond slicing the
 packed weight word and the bias vector; the arithmetic lives entirely in the
 neurons, so the same neuron can be reused at any depth.
 
+\textbf{Contains.} 32 instances of \texttt{TernaryNeuron}, generated by a
+\texttt{for~generate} loop. Unit $h$ takes bits $2h{+}1$ down to $2h$ of
+\texttt{WData} and bits $32h{+}31$ down to $32h$ of \texttt{Biases}.
+
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1249,36 +1606,32 @@ neurons, so the same neuron can be reused at any depth.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=green!8,align=center] (nl) {\texttt{NeuronLayer}};
-  \node[draw] (clk) [left=of nl] {clk};
-  \node[draw] (start) [left=of clk] {Start};
-  \node[draw] (fc) [left=of start] {FinalCycle};
-  \node[draw] (wd) [left=of fc] {WData};
-  \node[draw] (x) [left=of wd] {X};
-  \node[draw] (bias) [left=of x] {Biases};
-  \node[draw] (hid) [right=of nl] {Hidden};
-  \draw[->] (start) -- (nl);
-  \draw[->] (clk) -- (nl);
-  \draw[->] (fc) -- (nl);
-  \draw[->] (wd) -- (nl);
-  \draw[->] (x) -- (nl);
-  \draw[->] (bias) -- (nl);
-  \draw[->] (nl) -- (hid);
+\begin{tikzpicture}
+  \node[chip,fill=green!8,minimum width=48mm,minimum height=62mm] (b) at (0,0)
+    {\texttt{NeuronLayer}\\[1mm]{\tiny $32\times$ \texttt{TernaryNeuron}}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/2.65, Start/1/1.6,
+                                     FinalCycle/1/0.55, WData/64/-0.5,
+                                     X/4/-1.55, Biases/1024/-2.6} {
+    \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \node[pout] (o1) at (6.0,0) {\texttt{Hidden}\\[-0.6mm]{\tiny 256 bit}};
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{NeuronLayer block diagram.}
+\caption{\texttt{NeuronLayer}: six inputs on separate rows, one 256-bit output.
+  The block is almost pure wiring; its area is 32 neurons.}
 \label{fig:neuronlayer}
 \end{figure}
 
 \subsubsection{\texttt{TernaryNeuron.vhd} --- one hidden unit}
 \label{sub:neuron}
 
-The complete per-unit datapath, assembled from four smaller blocks:
+The complete per-unit datapath, assembled from three entities and one implicit
+sign extension:
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1286,42 +1639,56 @@ The complete per-unit datapath, assembled from four smaller blocks:
 \texttt{Start}      & 1  & load bias, clear accumulator \\
 \texttt{FinalCycle} & 1  & 1 on last input of image \\
 \texttt{W}          & 2  & ternary weight (2-bit packed) \\
-\texttt{X}          & 4  & rotated input pixel \\
+\texttt{X}          & 4  & rotated input pixel (signed) \\
 \texttt{Bias}       & 32 & bias value (signed) \\
 \texttt{Hidden}     & 8  & hidden activation (signed) \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
+\textbf{Contains.} One \texttt{TernaryApply}, one \texttt{Accumulator} (which
+contains the \texttt{Adder}) and one \texttt{Saturate} (which contains
+\texttt{ReLU}).
+
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw] (w) {$W$};
-  \node[draw] (x) [right=of w] {$X$};
-  \node[draw,fill=blue!8] (app) [right=of x] {\texttt{TernaryApply}};
-  \node[draw,fill=green!14] (acc) [right=of app] {\texttt{Accumulator}};
-  \node[draw,fill=orange!14] (sat) [right=of acc] {\texttt{Saturate}};
-  \node[draw,fill=blue!8] (hid) [right=of sat] {$H$};
-  \draw[->] (w) -- (app);
-  \draw[->] (x) -- (app);
-  \draw[->] (app) -- (acc);
-  \draw[->] (acc) -- (sat);
-  \draw[->] (sat) -- (hid);
+\begin{tikzpicture}[font=\scriptsize,>=Stealth,
+  nb/.style={draw,rounded corners=1.5pt,align=center,minimum height=20mm,
+             font=\scriptsize}]
+  \node[nb,fill=blue!8,minimum width=23mm]   (ap) at (-3.9,0) {\texttt{TernaryApply}\\{\tiny $T(W)\cdot X$}};
+  \node[nb,fill=green!14,minimum width=27mm] (ac) at (0,0)    {\texttt{Accumulator}\\{\tiny add register}};
+  \node[nb,fill=orange!14,minimum width=23mm](sa) at (3.9,0)  {\texttt{Saturate}\\{\tiny ReLU + clamp}};
+
+  \node[pin,minimum width=22mm] (w) at (-6.9,0.55) {\texttt{W}\\[-0.6mm]{\tiny 2 bit}};
+  \node[pin,minimum width=22mm] (x) at (-6.9,-0.55) {\texttt{X}\\[-0.6mm]{\tiny 4 bit}};
+  \node[pin,minimum width=40mm] (ctl) at (0,-2.5) {Bias, Start, FinalCycle\\[-0.6mm]{\tiny 32 + 1 + 1 bit}};
+  \node[pout,minimum width=22mm] (hid) at (6.9,0) {\texttt{Hidden}\\[-0.6mm]{\tiny 8 bit}};
+
+  \draw[sig] (w.east) -- (w.east -| ap.west);
+  \draw[sig] (x.east) -- (x.east -| ap.west);
+  \draw[sig] (ctl.north) -- (ac.south);
+
+  \draw[sig] (ap.east) -- node[above,font=\tiny,inner sep=1pt]{Delta} (ac.west);
+  \draw[sig] (ac.east) -- node[above,font=\tiny,inner sep=1pt]{Reg} (sa.west);
+  \draw[sig] (sa.north) to[out=120,in=60] node[above,font=\tiny,inner sep=1pt]{Clamped} (ac.north);
+  \draw[sig] (sa.east) -- (hid.west);
 \end{tikzpicture}
-\caption{The per-unit datapath. The weight word and the rotated activation feed
-the ternary multiply, which feeds the accumulator, which feeds the saturation.}
+\caption{The per-unit datapath. The weight and the rotated activation feed the
+  ternary multiply, whose \texttt{Delta} feeds the accumulator; on the final
+  cycle the accumulator loads the saturated \texttt{Clamped} value instead of the
+  running sum. The feedback is what makes the clamp a once-per-image operation.}
 \label{fig:neuron}
 \end{figure}
 
 \subsubsection{\texttt{TernaryApply.vhd} --- the ternary multiply}
 \label{sub:apply}
 
-The step that removes the multiplier from the datapath.
+The step that removes the multiplier from the datapath. The two-bit weight is
+the operation selector, so no decoder is needed.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1332,25 +1699,35 @@ The step that removes the multiplier from the datapath.
 \end{tabularx}
 \end{center}
 
+\begin{center}
+\small
+\begin{tabular}{@{}ccc@{}}
+\toprule
+\texttt{W} & $T(W)$ & \textbf{Hardware} \\
+\midrule
+\texttt{00} & $0$  & mask to zero \\
+\texttt{01} & $+1$ & pass the value \\
+\texttt{11} & $-1$ & complement and add one \\
+\texttt{10} & ---  & unreachable encoding \\
+\bottomrule
+\end{tabular}
+\end{center}
+
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw,fill=blue!8,align=center] (app) {\texttt{TernaryApply}};
-  \node[draw] (w) [left=of app] {W (2)};
-  \node[draw] (x) [left=of w] {X (R)};
-  \node[draw] (delta) [right=of app] {Delta (R)};
-  \draw[->] (w) -- (app);
-  \draw[->] (x) -- (app);
-  \draw[->] (app) -- (delta);
+\begin{tikzpicture}
+  \node[chip,fill=blue!8,minimum width=44mm,minimum height=26mm] (b) at (0,0)
+    {\texttt{TernaryApply}\\[1mm]{\tiny $T(W)\cdot X$}};
+  \node[pin] (i1) at (-5.9,0.65) {\texttt{W}\\[-0.6mm]{\tiny 2 bit}};
+  \node[pin] (i2) at (-5.9,-0.65) {\texttt{X}\\[-0.6mm]{\tiny R bit}};
+  \node[pout] (o1) at (5.9,0) {\texttt{Delta}\\[-0.6mm]{\tiny R bit}};
+  \draw[sig] (i1.east) -- (i1.east -| b.west);
+  \draw[sig] (i2.east) -- (i2.east -| b.west);
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{TernaryApply block diagram.}
+\caption{\texttt{TernaryApply}: two inputs, one output, no multiplier.}
 \label{fig:apply}
 \end{figure}
-
-\textbf{Operation}: $T(00) = 0$, $T(01) = +1$, $T(11) = -1$, and $T(10)$
-is unreachable. The two-bit field is the sign and the ``is it one'' flag, so
-no decoder is needed: the select is the weight itself.
 
 \subsubsection{\texttt{Adder.vhd} --- the adder}
 \label{sub:adder}
@@ -1361,7 +1738,7 @@ operator.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1376,32 +1753,34 @@ operator.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw,fill=gray!14,align=center] (add) {\texttt{Adder}};
-  \node[draw] (a) [left=of add] {A (R)};
-  \node[draw] (b) [left=of a] {B (R)};
-  \node[draw] (cin) [left=of b] {Cin (1)};
-  \node[draw] (s) [right=of add] {S (R)};
-  \node[draw] (cout) [right=of s] {Cout (1)};
-  \draw[->] (a) -- (add);
-  \draw[->] (b) -- (add);
-  \draw[->] (cin) -- (add);
-  \draw[->] (add) -- (s);
-  \draw[->] (add) -- (cout);
+\begin{tikzpicture}
+  \node[chip,fill=gray!14,minimum width=40mm,minimum height=38mm] (b) at (0,0)
+    {\texttt{Adder}\\[1mm]{\tiny ripple carry}};
+  \foreach \nm/\pw/\y [count=\i] in {A/R/1.1, B/R/0.0, Cin/1/-1.1} {
+    \node[pin] (i\i) at (-5.9,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \foreach \nm/\pw/\y [count=\i] in {S/R/0.55, Cout/1/-0.55} {
+    \node[pout] (o\i) at (5.9,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
 \end{tikzpicture}
-\caption{Adder block diagram.}
+\caption{\texttt{Adder}: three inputs, two outputs.}
 \label{fig:adder}
 \end{figure}
 
 \subsubsection{\texttt{Accumulator.vhd} --- the accumulator}
 \label{sub:acc}
 
-The sequential dataflow edge.
+The sequential dataflow edge: a loadable add register whose clamp is armed only
+on the last input of the image.
+
+\textbf{Contains.} One \texttt{Adder}. The register, the load multiplexer and the
+final-cycle selector are inline.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1410,40 +1789,37 @@ The sequential dataflow edge.
 \texttt{LoadValue}  & \texttt{RESOLUTION} & bias value to load \\
 \texttt{AddValue}   & \texttt{RESOLUTION} & delta to add \\
 \texttt{FinalCycle} & 1  & 1 on last input of image \\
-\texttt{Clamped}    & \texttt{RESOLUTION} & clamped value \\
-\texttt{Reg}        & \texttt{RESOLUTION} & accumulator register \\
+\texttt{Clamped}    & \texttt{RESOLUTION} & saturated value to load on the final cycle \\
+\texttt{Reg}        & \texttt{RESOLUTION} & accumulator register output \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.80, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=green!14,align=center] (acc) {\texttt{Accumulator}};
-  \node[draw] (clk) [left=of acc] {clk};
-  \node[draw] (load) [left=of clk] {Load};
-  \node[draw] (lv) [left=of load] {LoadValue};
-  \node[draw] (av) [left=of lv] {AddValue};
-  \node[draw] (fc) [left=of av] {FinalCycle};
-  \node[draw] (cl) [left=of fc] {Clamped};
-  \node[draw] (reg) [right=of acc] {Reg};
-  \draw[->] (load) -- (acc);
-  \draw[->] (clk) -- (acc);
-  \draw[->] (lv) -- (acc);
-  \draw[->] (av) -- (acc);
-  \draw[->] (fc) -- (acc);
-  \draw[->] (cl) -- (acc);
-  \draw[->] (acc) -- (reg);
+\begin{tikzpicture}
+  \node[chip,fill=green!14,minimum width=48mm,minimum height=62mm] (b) at (0,0)
+    {\texttt{Accumulator}\\[1mm]{\tiny add register + clamp select}};
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/2.65, Load/1/1.6,
+                                     LoadValue/R/0.55, AddValue/R/-0.5,
+                                     FinalCycle/1/-1.55, Clamped/R/-2.6} {
+    \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \node[pout] (o1) at (6.0,0) {\texttt{Reg}\\[-0.6mm]{\tiny R bit}};
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{Accumulator block diagram.}
+\caption{\texttt{Accumulator}: six inputs, one output. \texttt{Clamped} is an
+  input, produced by \texttt{Saturate}, not an output.}
 \label{fig:acc}
 \end{figure}
 
 \textbf{Operation}:
-$\texttt{Load} = 1 \Rightarrow \texttt{Reg} \leftarrow \texttt{LoadValue}$,
-$\texttt{Load} = 0 \Rightarrow \texttt{Reg} \leftarrow \texttt{Reg} +
-\texttt{AddValue}$, with the clamp armed only when \texttt{FinalCycle} $= 1$.
+$\texttt{Load} = 1 \Rightarrow \texttt{Reg} \leftarrow \texttt{LoadValue}$;
+$\texttt{Load} = 0$ and $\texttt{FinalCycle} = 0 \Rightarrow
+\texttt{Reg} \leftarrow \texttt{Reg} + \texttt{AddValue}$;
+$\texttt{Load} = 0$ and $\texttt{FinalCycle} = 1 \Rightarrow
+\texttt{Reg} \leftarrow \texttt{Clamped}$.
 
 \subsubsection{\texttt{ReLU.vhd} --- the activation}
 \label{sub:relu}
@@ -1453,7 +1829,7 @@ saturation range is applied by the parent block.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1465,26 +1841,30 @@ saturation range is applied by the parent block.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw,fill=orange!14,align=center] (relu) {\texttt{ReLU}};
-  \node[draw] (x) [left=of relu] {X (R)};
-  \node[draw] (y) [right=of relu] {Y (R)};
-  \draw[->] (x) -- (relu);
-  \draw[->] (relu) -- (y);
+\begin{tikzpicture}
+  \node[chip,fill=orange!14,minimum width=38mm,minimum height=24mm] (b) at (0,0)
+    {\texttt{ReLU}\\[1mm]{\tiny sign mask}};
+  \node[pin] (i1) at (-5.7,0) {\texttt{X}\\[-0.6mm]{\tiny R bit}};
+  \node[pout] (o1) at (5.7,0) {\texttt{Y}\\[-0.6mm]{\tiny R bit}};
+  \draw[sig] (i1.east) -- (i1.east -| b.west);
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{ReLU block diagram.}
+\caption{\texttt{ReLU}: one input, one output. Nineteen lines of VHDL.}
 \label{fig:relu}
 \end{figure}
 
 \subsubsection{\texttt{Saturate.vhd} --- ReLU plus saturation}
 \label{sub:saturate}
 
-The integer activation. ReLU plus saturation to $[0, \texttt{HIDDEN\_MAX}]$.
+The integer activation. ReLU plus saturation to $[0, \texttt{HIDDEN\_MAX}]$,
+where \texttt{HIDDEN\_MAX} is 127 for the deployed eight-bit activation.
+
+\textbf{Contains.} One \texttt{ReLU}; the upper clamp is a comparator and a
+multiplexer.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
@@ -1496,75 +1876,80 @@ The integer activation. ReLU plus saturation to $[0, \texttt{HIDDEN\_MAX}]$.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw,fill=orange!14,align=center] (sat) {\texttt{Saturate}};
-  \node[draw] (val) [left=of sat] {Value (R)};
-  \node[draw] (y) [right=of sat] {Y (R)};
-  \draw[->] (val) -- (sat);
-  \draw[->] (sat) -- (y);
+\begin{tikzpicture}
+  \node[chip,fill=orange!14,minimum width=44mm,minimum height=24mm] (b) at (0,0)
+    {\texttt{Saturate}\\[1mm]{\tiny $\mathrm{ReLU}$ then clamp to 127}};
+  \node[pin] (i1) at (-5.9,0) {\texttt{Value}\\[-0.6mm]{\tiny R bit}};
+  \node[pout] (o1) at (5.9,0) {\texttt{Y}\\[-0.6mm]{\tiny R bit}};
+  \draw[sig] (i1.east) -- (i1.east -| b.west);
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{Saturate block diagram.}
+\caption{\texttt{Saturate}: one input, one output, containing one
+  \texttt{ReLU}.}
 \label{fig:sat}
 \end{figure}
 
-\textbf{Operation}: negative $\Rightarrow 0$, greater than
-\texttt{MAX\_VALUE} $\Rightarrow$ \texttt{MAX\_VALUE}, else pass through.
+%% ----------------------------------------------------------------------------
+\subsection{Output layer and class selection}
 
-\subsection{\texttt{DenseLayer.vhd} --- combinational output layer}
+\subsubsection{\texttt{DenseLayer.vhd} --- combinational output layer}
 \label{sub:denselayer}
 
 A generic combinational dense layer, parameterised on \texttt{N\_INPUTS},
 \texttt{N\_OUTPUTS}, \texttt{DATA\_WIDTH}, \texttt{WEIGHT\_WIDTH},
 \texttt{ACC\_WIDTH}, \texttt{OUTPUT\_WIDTH} and a \texttt{USE\_RELU} flag. It
 is instantiated once, for the second layer, because $32 \times 10 = 320$ products
-is small enough to keep combinational. It contains a real multiplier, which is
-acceptable because it accounts for 1.26\% of the weights.
+is small enough to keep combinational. It contains real multipliers, which is
+acceptable because the second layer accounts for 1.26\% of the weights.
+
+\textbf{Contains.} 320 multiply--accumulate products in a single combinational
+process; no sub-entities.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
-\texttt{A}       & \texttt{N\_INPUTS}$\times$\texttt{DATA\_WIDTH} & input vector \\
-\texttt{Weights} & \texttt{N\_INPUTS}$\times$\texttt{N\_OUTPUTS}$\times$\texttt{WEIGHT\_WIDTH} & weight matrix \\
-\texttt{Biases}  & \texttt{N\_OUTPUTS}$\times$\texttt{ACC\_WIDTH} & bias vector \\
-\texttt{Y}       & \texttt{N\_OUTPUTS}$\times$\texttt{OUTPUT\_WIDTH} & output vector \\
+\texttt{A}       & \texttt{N\_INPUTS}$\times$\texttt{DATA\_WIDTH} & input vector (32$\times$8) \\
+\texttt{Weights} & \texttt{N\_INPUTS}$\times$\texttt{N\_OUTPUTS}$\times$\texttt{WEIGHT\_WIDTH} & weight matrix (32$\times$10$\times$16) \\
+\texttt{Biases}  & \texttt{N\_OUTPUTS}$\times$\texttt{ACC\_WIDTH} & bias vector (10$\times$32) \\
+\texttt{Y}       & \texttt{N\_OUTPUTS}$\times$\texttt{OUTPUT\_WIDTH} & signed scores (10$\times$32) \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=orange!8,align=center] (dl) {\texttt{DenseLayer}};
-  \node[draw] (a) [left=of dl] {A};
-  \node[draw] (w) [left=of a] {Weights};
-  \node[draw] (b) [left=of w] {Biases};
-  \node[draw] (y) [right=of dl] {Y};
-  \draw[->] (a) -- (dl);
-  \draw[->] (w) -- (dl);
-  \draw[->] (b) -- (dl);
-  \draw[->] (dl) -- (y);
+\begin{tikzpicture}
+  \node[chip,fill=orange!10,minimum width=48mm,minimum height=38mm] (b) at (0,0)
+    {\texttt{DenseLayer}\\[1mm]{\tiny $32\times10$, 16-bit weights}};
+  \foreach \nm/\pw/\y [count=\i] in {A/256/1.1, Weights/5120/0.0, Biases/320/-1.1} {
+    \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (i\i.east) -- (i\i.east -| b.west);
+  }
+  \node[pout] (o1) at (6.0,0) {\texttt{Y}\\[-0.6mm]{\tiny 320 bit}};
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{DenseLayer block diagram.}
+\caption{\texttt{DenseLayer}: the only block in the classifier that contains a
+  multiplier. It is combinational and accounts for 1.26\% of the weights.}
 \label{fig:denselayer}
 \end{figure}
 
-\subsection{\texttt{ArgMax.vhd} --- class selection}
+\subsubsection{\texttt{ArgMax.vhd} --- class selection}
 \label{sub:argmax}
 
-Ten signed scores to a four-bit class index, fully combinational.
+Ten signed scores to a four-bit class index, fully combinational. A single
+process scans the score vector and keeps the first index with the strictly
+largest score.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}llL@{}}
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
-\texttt{Scores}   & \texttt{N\_CLASSES}$\times$\texttt{DATA\_WIDTH} & input scores \\
+\texttt{Scores}   & \texttt{N\_CLASSES}$\times$\texttt{DATA\_WIDTH} & input scores (10$\times$32) \\
 \texttt{Class\_id}& \texttt{INDEX\_WIDTH} & predicted class (0--9) \\
 \bottomrule
 \end{tabularx}
@@ -1572,53 +1957,60 @@ Ten signed scores to a four-bit class index, fully combinational.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw,fill=orange!8,align=center] (am) {\texttt{ArgMax}};
-  \node[draw] (scores) [left=of am] {Scores (10$\times$32)};
-  \node[draw] (cid) [right=of am] {Class\_id (4)};
-  \draw[->] (scores) -- (am);
-  \draw[->] (am) -- (cid);
+\begin{tikzpicture}
+  \node[chip,fill=orange!10,minimum width=44mm,minimum height=24mm] (b) at (0,0)
+    {\texttt{ArgMax}\\[1mm]{\tiny 10 scores $\rightarrow$ 4 bits}};
+  \node[pin] (i1) at (-6.0,0) {\texttt{Scores}\\[-0.6mm]{\tiny 320 bit}};
+  \node[pout] (o1) at (6.0,0) {\texttt{Class\_id}\\[-0.6mm]{\tiny 4 bit}};
+  \draw[sig] (i1.east) -- (i1.east -| b.west);
+  \draw[sig] (b.east |- o1.west) -- (o1.west);
 \end{tikzpicture}
-\caption{ArgMax block diagram.}
+\caption{\texttt{ArgMax}: one vector in, one index out.}
 \label{fig:argmax}
 \end{figure}
 
+%% ----------------------------------------------------------------------------
 \subsection{\texttt{ModelWeights.vhd} --- generated constants}
 \label{sub:modelweights}
+
+Not an entity: a VHDL package of constant arrays, imported by
+\texttt{NumberRecognition}. It is the only file that changes when a new
+checkpoint is deployed.
 
 \begin{table}[H]
 \centering
 \small
 \caption{The generated weight package. Sizes shown are for the deployed
   $H{=}32$ configuration.}
-\begin{tabularx}{\linewidth}{@{}lrlY@{}}
+\label{tab:weights}
+\begin{tabularx}{\linewidth}{@{}lrL@{}}
 \toprule
 \textbf{Constant} & \textbf{Bits} & \textbf{Content} \\
 \midrule
-\texttt{W1\_PACKED\_INIT} & 50{,}176 & packed 2-bit $W_1$, 784 $\times$ 32 \\
+\texttt{W1\_PACKED\_INIT} & 50{,}176 & packed 2-bit $W_1$, 784 words $\times$ 64 bits \\
 \texttt{B1\_INIT}         & 1{,}024 & first-layer biases, 32 units $\times$ 32 bits \\
 \texttt{W2\_INIT}         &   5{,}120 & second-layer weights, 32 $\times$ 10 at 16 bits \\
-\texttt{B2\_INIT}         &     320 & second-layer biases \\
+\texttt{B2\_INIT}         &     320 & second-layer biases, 10 $\times$ 32 bits \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
-  node distance=6mm and 6mm]
-  \node[draw,fill=gray!14,align=center] (mw) {\texttt{ModelWeights}};
-  \node[draw] (w1) [left=of mw] {W1};
-  \node[draw] (b1) [left=of w1] {B1};
-  \node[draw] (w2) [right=of mw] {W2};
-  \node[draw] (b2) [right=of w2] {B2};
-  \draw[->] (w1) -- (mw);
-  \draw[->] (b1) -- (mw);
-  \draw[->] (mw) -- (w2);
-  \draw[->] (mw) -- (b2);
+\begin{tikzpicture}
+  \node[chip,fill=gray!14,minimum width=48mm,minimum height=62mm] (b) at (0,0)
+    {\texttt{ModelWeights}\\[1mm]{\tiny VHDL package}\\[-0.4mm]{\tiny no ports}};
+  \foreach \nm/\pw/\y [count=\i] in {W1\_PACKED\_INIT/50\,176/2.2,
+                                     B1\_INIT/1\,024/0.9,
+                                     W2\_INIT/5\,120/-0.9,
+                                     B2\_INIT/320/-2.2} {
+    \node[pout] (o\i) at (6.2,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
+  \node[font=\tiny,gray!70,anchor=south] at (0,3.7) {read by the classifier};
 \end{tikzpicture}
-\caption{ModelWeights block diagram.}
+\caption{\texttt{ModelWeights}: a package, so it has no ports. The four arrows
+  are the four constants it exports; the sizes are what the classifier reads.}
 \label{fig:modelweights}
 \end{figure}
 
@@ -1626,6 +2018,7 @@ This file is generated by \texttt{export\_vhdl\_model.py} and must not be edited
 by hand. Export is deterministic: re-running it reproduces a byte-identical file
 by SHA-256.
 
+%% ----------------------------------------------------------------------------
 \subsection{Testbenches}
 \label{sec:testbenches}
 
@@ -1634,7 +2027,7 @@ chain in Section~\ref{sec:verification}.
 
 \begin{center}
 \small
-\begin{tabularx}{\linewidth}{@{}llY@{}}
+\begin{tabularx}{\linewidth}{@{}lL@{}}
 \toprule
 \textbf{Testbench} & \textbf{Question it answers} \\
 \midrule
@@ -1647,7 +2040,6 @@ chain in Section~\ref{sec:verification}.
 \bottomrule
 \end{tabularx}
 \end{center}
-
 \section{Verification Methodology}
 \label{sec:verification}
 
@@ -1726,18 +2118,25 @@ than proceeding.
 
 Table~\ref{tab:accuracy} compares the deployed ternary network against the
 classical float reference on three input distributions. The float reference is
-more accurate on all three, by between 2.6 and 14.4 points depending on how far
-the input departs from the MNIST training distribution.
+more accurate on clean MNIST and on rendered fonts, by 3.5 and 7.8 points
+respectively, and by 3.4 points on the full 10{,}000-image test set. On
+hand-drawn input the ternary network is the better classifier, 84.8\% against
+80.5\%: that is the one input distribution on which the quantisation costs
+nothing.
 
 \begin{table}[H]
 \centering
 \small
 \caption{Accuracy of the deployed $H{=}32$ ternary network against the classical
-  float reference.}
+  float reference. The MNIST column is the same 2{,}000 images pushed through
+  the complete pipeline --- the GUI for the float model, the RTL simulation for
+  the ternary one --- not the 10{,}000-image test set, where the two models
+  score 98.05\% and 94.61\%.}
 \label{tab:accuracy}
 \begin{tabularx}{\linewidth}{@{}lY Y Y Y@{}}
 \toprule
-\textbf{Model} & \textbf{Validation} & \textbf{MNIST} & \textbf{Hand-drawn} & \textbf{Fonts} \\
+\textbf{Model} & \textbf{Validation} & \textbf{MNIST (2{,}000)} &
+\textbf{Hand-drawn} & \textbf{Fonts} \\
 \midrule
 Float 784--256--10 (reference) & \good 98.24\% & \good 97.0\% & 80.5\% & \good 91.1\% \\
 Ternary 784--16--10            & 94.18\% & 92.5\% & 74.8\% & 78.9\% \\
@@ -1755,9 +2154,12 @@ measures that can be established without synthesis.
 \begin{table}[H]
 \centering
 \small
-\caption{Complexity comparison. \textbf{Time} is cycle count, which is exact
-  because the MAC engine sustains one MAC per cycle. \textbf{Space} is measured
-  weight storage. Arithmetic operator counts are exact.}
+\caption{Complexity comparison. \textbf{Time} is cycle count and is exact: the
+  sequential engines take one clock per MAC in the float case and one clock per
+  \emph{input} in the ternary case, where 32 products are formed per cycle.
+  \textbf{Space} is given twice: the information content of the weights, and
+  the size actually encoded, at two bits per first-layer weight. Arithmetic
+  operator counts are exact.}
 \label{tab:complexity}
 \begin{tabularx}{\linewidth}{@{}lY Y Y@{}}
 \toprule
@@ -1768,28 +2170,33 @@ MACs per image          & 203{,}264 & \good 12{,}704 & 25{,}408 \\
 Relative                & 1.00      & 0.0625    & 0.1250 \\
 Multipliers             & 203{,}530 & \good 0    & \good 0 \\
 Adders                  & 203{,}530 & 12{,}704   & 25{,}408 \\
-Latency at 100 MHz      & 2.033 ms  & 0.127 ms  & 0.254 ms \\
+MAC cycles              & 203{,}264 & \good 784 & \good 784 \\
+Latency at 100 MHz      & 2.033 ms (est.) & 15.7\,\textmu s & 15.7\,\textmu s (meas.) \\
 \midrule
 \multicolumn{4}{@{}l}{\textit{Space complexity}} \\
-Parameters              & 203{,}530 & 12{,}730 & 25{,}418 \\
-Relative                & 1.00      & 0.0626    & 0.1249 \\
-Weight storage          & 6{,}512{,}960 bit & \good 15{,}121 bit & \good 28{,}515 bit \\
+Parameters              & 203{,}530 & 12{,}730 & 25{,}450 \\
+Relative                & 1.00      & 0.0626    & 0.1250 \\
+Weight storage (information) & 6{,}512{,}960 bit & \good 15{,}121 bit & \good 28{,}515 bit \\
 Relative                & 1.00      & \good 0.00232 & \good 0.00438 \\
-BRAM36 for weights      & 24.8      & \good 0.06 & 0.11 \\
+Weight storage (encoded) & 6{,}512{,}960 bit & \good 28{,}480 bit & 56{,}640 bit \\
+Relative                & 1.00      & \good 0.00437 & 0.00870 \\
+BRAM36 for weights      & 177       & \good 0.8 & 1.5 \\
 Entropy per weight      & 32.0 bit  & 1.189 bit & \good 1.122 bit \\
 \midrule
 \multicolumn{4}{@{}l}{\textit{Accuracy}} \\
-MNIST test              & \good 98.24\% & 94.19\% & 94.61\% \\
-Retained vs float       & 100\%     & 95.9\%    & 96.3\% \\
+MNIST test              & \good 98.05\% & 94.19\% & 94.61\% \\
+Retained vs float       & 100\%     & 96.0\%    & 96.5\% \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 The asymmetry is the point of the report. In \emph{space} the ternary design wins
-by more than two orders of magnitude, because 25 bits per weight are eliminated
-from 98.6\% of the weights. In \emph{time} it wins by a factor of eight, because
-the multiplier count goes to zero. In \emph{accuracy} it loses by under three
-points.
+by two orders of magnitude: 115$\times$ fewer bytes stored and 228$\times$ less
+weight information, because 30 bits per weight are eliminated and 98.7\% of the
+weights become ternary. In \emph{time} it wins because 32 products are formed
+in a single cycle: 259$\times$ fewer cycles and 129$\times$ less end-to-end
+latency, with no multiplier in the datapath at all. In \emph{accuracy} it loses
+by 3.4 points.
 
 \subsection{Energy}
 \label{sec:energy}
@@ -1810,11 +2217,12 @@ arithmetic and memory traffic that dominates energy in an FPGA inference engine.
 \midrule
 Multiplier operations  & 203{,}530 & \good 0 & \good 0 \\
 Adder operations       & 203{,}530 & 12{,}704 & 25{,}408 \\
-BRAM reads (weights)    & 203{,}530 & 12{,}544 & 25{,}088 \\
-BRAM36 occupied         & 24.8      & \good 0.06 & \good 0.11 \\
+Weight reads            & 203{,}530 & 12{,}704 & 25{,}408 \\
+Weight bits read        & 6{,}512{,}960 & \good 27{,}648 & 55{,}296 \\
+BRAM36 occupied         & 177       & \good 0.8 & 1.5 \\
 \midrule
 Arithmetic ops, relative & 1.00     & \good 0.0625 & 0.1250 \\
-Memory traffic, relative & 1.00     & \good 0.0617 & 0.1238 \\
+Memory traffic, relative & 1.00     & \good 0.00425 & 0.00849 \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1823,7 +2231,9 @@ A 7-series DSP48E1 multiplier is roughly two orders of magnitude more expensive
 per operation in dynamic energy than a LUT-based adder, and a BRAM read is
 comparable to a few adders. Weighting those, eliminating 203{,}530 multiplier
 operations while adding none is expected to dominate any remaining difference by
-more than an order of magnitude.
+more than an order of magnitude. The memory term moves in the same direction:
+every weight is read exactly once per inference, so the weight bits read per
+image fall from 795 KiB to 54 KiB.
 
 That last sentence is an \emph{inference from operation counts}, and is labelled
 as such. It is not a measured energy figure, and it should not be quoted as
@@ -1833,145 +2243,44 @@ environment does not support.
 \subsection{Result figures}
 
 Figure~\ref{fig:confusion} shows the confusion matrix for the deployed network on
-hand-drawn input. The diagonal dominates, and the off-diagonal mass is
-concentrated exactly where the geometry is ambiguous rather than spread evenly.
+the full 10{,}000-image MNIST test set. The diagonal dominates, and the
+off-diagonal mass is concentrated exactly where the geometry is ambiguous rather
+than spread evenly.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=1.0]
-\fill[blue!64] (-0.62,6.20) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (-0.34,6.48) {28};
-\fill[gray!8] (0.00,6.20) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.62,6.20) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.24,6.20) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.86,6.20) rectangle ++(0.56,0.56);
-\fill[gray!8] (2.48,6.20) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.10,6.20) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.72,6.20) rectangle ++(0.56,0.56);
-\fill[blue!23] (4.34,6.20) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (4.62,6.48) {5};
-\fill[blue!27] (4.96,6.20) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (5.24,6.48) {7};
-\fill[gray!8] (-0.62,5.58) rectangle ++(0.56,0.56);
-\fill[blue!74] (0.00,5.58) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (0.28,5.86) {34};
-\fill[blue!20] (0.62,5.58) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (0.90,5.86) {3};
-\fill[gray!8] (1.24,5.58) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.86,5.58) rectangle ++(0.56,0.56);
-\fill[gray!8] (2.48,5.58) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.10,5.58) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.72,5.58) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.34,5.58) rectangle ++(0.56,0.56);
-\fill[blue!20] (4.96,5.58) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (5.24,5.86) {3};
-\fill[gray!8] (-0.62,4.96) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.00,4.96) rectangle ++(0.56,0.56);
-\fill[blue!83] (0.62,4.96) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (0.90,5.24) {39};
-\fill[gray!8] (1.24,4.96) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.86,4.96) rectangle ++(0.56,0.56);
-\fill[gray!8] (2.48,4.96) rectangle ++(0.56,0.56);
-\fill[blue!16] (3.10,4.96) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (3.38,5.24) {1};
-\fill[gray!8] (3.72,4.96) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.34,4.96) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.96,4.96) rectangle ++(0.56,0.56);
-\fill[gray!8] (-0.62,4.34) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.00,4.34) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.62,4.34) rectangle ++(0.56,0.56);
-\fill[blue!76] (1.24,4.34) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (1.52,4.62) {35};
-\fill[gray!8] (1.86,4.34) rectangle ++(0.56,0.56);
-\fill[gray!8] (2.48,4.34) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.10,4.34) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.72,4.34) rectangle ++(0.56,0.56);
-\fill[blue!16] (4.34,4.34) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (4.62,4.62) {1};
-\fill[blue!22] (4.96,4.34) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (5.24,4.62) {4};
-\fill[gray!8] (-0.62,3.72) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.00,3.72) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.62,3.72) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.24,3.72) rectangle ++(0.56,0.56);
-\fill[blue!65] (1.86,3.72) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (2.14,4.00) {29};
-\fill[gray!8] (2.48,3.72) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.10,3.72) rectangle ++(0.56,0.56);
-\fill[blue!16] (3.72,3.72) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (4.00,4.00) {1};
-\fill[gray!8] (4.34,3.72) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.96,3.72) rectangle ++(0.56,0.56);
-\fill[blue!16] (-0.62,3.10) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (-0.34,3.38) {1};
-\fill[gray!8] (0.00,3.10) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.62,3.10) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.24,3.10) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.86,3.10) rectangle ++(0.56,0.56);
-\fill[blue!81] (2.48,3.10) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (2.76,3.38) {38};
-\fill[gray!8] (3.10,3.10) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.72,3.10) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.34,3.10) rectangle ++(0.56,0.56);
-\fill[blue!16] (4.96,3.10) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (5.24,3.38) {1};
-\fill[gray!8] (-0.62,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.00,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.62,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.24,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.86,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (2.48,2.48) rectangle ++(0.56,0.56);
-\fill[blue!85] (3.10,2.48) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (3.38,2.76) {40};
-\fill[gray!8] (3.72,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.34,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.96,2.48) rectangle ++(0.56,0.56);
-\fill[gray!8] (-0.62,1.86) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.00,1.86) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.62,1.86) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.24,1.86) rectangle ++(0.56,0.56);
-\fill[blue!16] (1.86,1.86) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (2.14,2.14) {1};
-\fill[blue!16] (2.48,1.86) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (2.76,2.14) {1};
-\fill[gray!8] (3.10,1.86) rectangle ++(0.56,0.56);
-\fill[blue!34] (3.72,1.86) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (4.00,2.14) {11};
-\fill[gray!8] (4.34,1.86) rectangle ++(0.56,0.56);
-\fill[gray!8] (4.96,1.86) rectangle ++(0.56,0.56);
-\fill[gray!8] (-0.62,1.24) rectangle ++(0.56,0.56);
-\fill[blue!16] (0.00,1.24) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (0.28,1.52) {1};
-\fill[gray!8] (0.62,1.24) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.24,1.24) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.86,1.24) rectangle ++(0.56,0.56);
-\fill[gray!8] (2.48,1.24) rectangle ++(0.56,0.56);
-\fill[blue!27] (3.10,1.24) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (3.38,1.52) {7};
-\fill[blue!16] (3.72,1.24) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (4.00,1.52) {1};
-\fill[blue!34] (4.34,1.24) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (4.62,1.52) {11};
-\fill[gray!8] (4.96,1.24) rectangle ++(0.56,0.56);
-\fill[blue!16] (-0.62,0.62) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (-0.34,0.90) {1};
-\fill[gray!8] (0.00,0.62) rectangle ++(0.56,0.56);
-\fill[gray!8] (0.62,0.62) rectangle ++(0.56,0.56);
-\fill[gray!8] (1.24,0.62) rectangle ++(0.56,0.56);
-\fill[blue!16] (1.86,0.62) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (2.14,0.90) {1};
-\fill[gray!8] (2.48,0.62) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.10,0.62) rectangle ++(0.56,0.56);
-\fill[gray!8] (3.72,0.62) rectangle ++(0.56,0.56);
-\fill[blue!16] (4.34,0.62) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (4.62,0.90) {1};
-\fill[blue!79] (4.96,0.62) rectangle ++(0.56,0.56);
-\node[font=\tiny,text=white] at (5.24,0.90) {37};
-\foreach \k in {0,...,9} {\node[font=\scriptsize] at ({((\k-4.5)*0.62)},-0.32) {\k+1}; \node[font=\scriptsize] at (-0.42,{4.5*0.62-(\k*0.62)}) {\k+1};}
+\begin{tikzpicture}[font=\scriptsize,x=1.05cm,y=1.05cm]
+  \newcommand{\cmcell}[3]{%
+    \pgfmathtruncatemacro{\shv}{#3/1126*100}%
+    \filldraw[fill=blue!\shv,draw=gray!40,line width=0.25pt]
+      (#2-0.5,8.5-#1) rectangle ++(1,1);%
+    \ifnum\shv>62
+      \node[text=white] at (#2,9-#1) {#3};%
+    \else
+      \node at (#2,9-#1) {#3};%
+    \fi}
+  \foreach \v [count=\c from 0] in {966,0,0,0,0,2,6,2,4,0}   {\cmcell{0}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {0,1126,5,2,0,0,1,1,0,0}  {\cmcell{1}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {7,1,971,16,0,3,5,10,17,2}{\cmcell{2}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {4,0,12,959,0,18,0,7,10,0}{\cmcell{3}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {0,2,6,0,921,0,8,2,9,34}  {\cmcell{4}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {9,3,1,29,3,823,7,3,12,2} {\cmcell{5}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {10,2,1,0,7,13,922,0,3,0} {\cmcell{6}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {0,11,12,6,2,0,1,980,4,12}{\cmcell{7}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {6,10,2,27,5,25,3,8,882,6} {\cmcell{8}{\c}{\v}}
+  \foreach \v [count=\c from 0] in {10,7,0,14,28,9,1,22,7,911}{\cmcell{9}{\c}{\v}}
+  \draw[gray!55,line width=0.4pt] (-0.5,-0.5) rectangle (9.5,9.5);
+  \foreach \k in {0,...,9} {
+    \node[font=\scriptsize] at (\k,-0.82) {\k};
+    \node[font=\scriptsize] at (-0.82,9-\k) {\k};
+  }
+  \node[font=\small] at (4.5,-1.55) {predicted digit};
+  \node[font=\small,rotate=90] at (-1.42,4.5) {true digit};
 \end{tikzpicture}
-\caption{Confusion matrix for the deployed $H{=}32$ network on hand-drawn input
-  (400 samples). Row 8 is the weakest at 27.5\%: the two-loop digit remains the
-  hardest case even at this width.}
+\caption{Confusion matrix of the deployed $H{=}32$ network on the full
+  10{,}000-image MNIST test set (94.61\%). The diagonal dominates; the largest
+  off-diagonal cells are $4\!\rightarrow\!9$ (34), $5\!\rightarrow\!3$ (29) and
+  $9\!\rightarrow\!4$ (28).}
 \label{fig:confusion}
 \end{figure}
 
@@ -1983,26 +2292,26 @@ ternary point sits low and to the right --- cheap but slightly less accurate
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=0.8\textwidth, height=0.5\textwidth,
-  xlabel={weight storage (KiB, log scale)},
-  ylabel={MNIST accuracy (\%)},
-  xmin=0.8, xmax=2000, ymin=88, ymax=100,
+  width=0.74\textwidth, height=0.34\textwidth,
+  xlabel={weight information (KiB, log scale)},
+  ylabel={test accuracy (\%)},
+  xmin=1.5, xmax=2000, ymin=92, ymax=99.5,
   xmode=log, grid=both, grid style={gray!25},
   legend style={at={(0.03,0.97)},anchor=north west,font=\small},
 ]
-\addplot[only marks, mark=square*, mark size=7pt, blue!70] coordinates {(795.0, 97.0)};
+\addplot[only marks, mark=square*, mark size=6pt, blue!70] coordinates {(795.0, 98.05)};
 \addlegendentry{Float 784--256--10}
-\addplot[only marks, mark=triangle*, mark size=9pt, red!75] coordinates {(3.5, 93.5)};
+\addplot[only marks, mark=triangle*, mark size=8pt, red!75] coordinates {(3.48, 94.61)};
 \addlegendentry{Ternary 784--32--10}
-\addplot[only marks, mark=*, mark size=6pt, green!45!black] coordinates {(30.3, 94.7)};
-\addlegendentry{Ternary, unaugmented}
-\draw[->,thick,gray!60] (3.5,93.5) to[bend left=18] (795.0,97.0);
-\node[font=\tiny,align=center,gray!70] at (120,91.5) {228$\times$ less storage,\\2.6 points less accurate};
+\node[font=\scriptsize,align=center,text=black!70] at (axis cs:120,92.9)
+  {228$\times$ less storage, 3.4 points less accurate};
 \end{axis}
 \end{tikzpicture}
-\caption{Cost against accuracy for the three measured points. Moving from float
-  to ternary costs a little accuracy and buys two orders of magnitude in
-  storage.}
+\caption{Storage against accuracy for the two measured models, both on the full
+  test set. The horizontal axis is the information content of the weights; the
+  bytes actually stored are 795.0\,KiB and 6.9\,KiB, a ratio of 115$\times$.
+  Moving from float to ternary buys 228$\times$ less weight information for
+  3.4 accuracy points.}
 \label{fig:cost}
 \end{figure}
 
@@ -2028,27 +2337,67 @@ this subset is simply slightly harder. Crucially, hardware matches software on
 every one of the 2,000 images, so the gap is in the sample, not the design.
 
 \subsection{Confusion analysis}
+\label{sec:confusion}
 
-Per-digit accuracy reveals structure that the aggregate hides. The dominant
-failure on hand-drawn input is $8 \rightarrow 6$: an 8 has two closed loops and a
-6 has one, and they are otherwise the same shape.
+Aggregate accuracy hides the structure of the errors. On the full test set the
+weakest classes are 9 (90.29\%) and 8 (90.55\%), and the two strongest are 1
+(99.21\%) and 0 (98.57\%). Figure~\ref{fig:recall} shows the per-class recall;
+Table~\ref{tab:confusions} shows where the mass goes.
+
+The dominant pair is $4\rightarrow9$: a closed top and a right-hand stroke make
+the two digits nearly identical at this resolution. The next two, $5\rightarrow3$
+and $9\rightarrow4$, are the same ambiguity seen from the other side. Summed
+over the eight most frequent pairs, these confusions account for 37\% of all
+539 errors, which is the signature of a capacity limit rather than random noise.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=0.72cm,y=0.42cm,font=\scriptsize]
+  \foreach \d/\acc [count=\i from 0] in {
+      0/98.57, 1/99.21, 2/94.09, 3/94.95, 4/93.79,
+      5/92.26, 6/96.24, 7/95.33, 8/90.55, 9/90.29} {
+    \fill[blue!55] (85,-\i-0.28) rectangle (\acc,-\i+0.28);
+    \node[anchor=east] at (84.2,-\i) {\d};
+    \node[anchor=west,font=\scriptsize] at (100.6,-\i) {\acc};
+  }
+  \draw[gray!60] (85,0.6) -- (85,-9.6);
+  \draw[gray!60] (85,-9.6) -- (100.4,-9.6);
+  \foreach \k in {85,90,95,100} {
+    \draw[gray!60] (\k,-9.6) -- (\k,-9.85)
+      node[below,font=\scriptsize] {\k};
+  }
+  \draw[dashed,red!60] (94.61,0.6) -- (94.61,-9.6);
+  \node[font=\scriptsize,red!60,anchor=south west] at (94.5,0.6) {mean 94.61};
+  \node[font=\scriptsize,anchor=north] at (92.7,-10.7) {per-class recall (\%)};
+\end{tikzpicture}
+\caption{Per-class recall on the 10{,}000-image test set; the axis starts at 85\%
+  so that the seven-point spread is visible. The dashed line is the aggregate
+  accuracy.}
+\label{fig:recall}
+\end{figure}
 
 \begin{table}[H]
 \centering
 \small
-\caption{Confusion counts on hand-drawn input. Doubling the hidden layer from 16
-  to 32 eliminates the dominant $8 \rightarrow 6$ error almost entirely, which
-  confirms it was a capacity limit rather than a data-balance problem.}
-\begin{tabularx}{\linewidth}{@{}lYY@{}}
+\caption{The eight most frequent confusions on the test set. The share is of the
+  539 total errors.}
+\label{tab:confusions}
+\begin{tabular}{@{}lrr@{}}
 \toprule
-\textbf{Confusion} & \textbf{$H{=}16$ width} & \textbf{$H{=}32$ width} \\
+\textbf{True $\rightarrow$ predicted} & \textbf{Count} & \textbf{Share of errors} \\
 \midrule
-$8 \rightarrow 6$ & \bad 25 & \good 3 \\
-$7 \rightarrow 2$ & 8 & \good 0 \\
-$0 \rightarrow 9$ & 8 & \good 1 \\
-$5 \rightarrow 8$ & 8 & \good 1 \\
+4 $\rightarrow$ 9 & 34 & 6.3\% \\
+5 $\rightarrow$ 3 & 29 & 5.4\% \\
+9 $\rightarrow$ 4 & 28 & 5.2\% \\
+8 $\rightarrow$ 3 & 27 & 5.0\% \\
+8 $\rightarrow$ 5 & 25 & 4.6\% \\
+9 $\rightarrow$ 7 & 22 & 4.1\% \\
+3 $\rightarrow$ 5 & 18 & 3.3\% \\
+2 $\rightarrow$ 8 & 17 & 3.2\% \\
+\midrule
+\textbf{Top eight} & \textbf{200} & \textbf{37.1\%} \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
 \end{table}
 
 %% ============================================================================
@@ -2059,8 +2408,8 @@ Five substantial optimisation attempts were made and failed. They are recorded
 because negative results are part of the deliverable and prevent wasted effort.
 
 \begin{enumerate}[leftmargin=*]
-\item \textbf{Knowledge distillation} from the 98.24\% float teacher.
-      Result: 82.56\%, against an 83.96\% undistilled baseline. The teacher's
+\item \textbf{Knowledge distillation} from the float teacher (98.05\% on the test
+      set). Result: 82.56\%, against an 83.96\% undistilled baseline. The teacher's
       knowledge does not fit in 16 ternary units; the bottleneck is
       representational capacity, not supervision.
 
@@ -2095,42 +2444,187 @@ require an RTL input path change, and knowledge distillation with augmentation
 applied to the teacher.
 
 %% ============================================================================
+\section{Implementation Roadmap}
+\label{sec:roadmap}
+
+Everything in this report is verified in simulation. Nothing in it has been
+synthesized, placed, routed or run on a board, because no vendor toolchain was
+available in the development environment. That is not a limitation to be
+apologised for at the end of the document; it is a work package with a defined
+sequence, and this section states it as one. Each task below has an artefact and
+an exit criterion, so progress is checkable rather than a matter of opinion.
+
+\subsection{Outstanding tasks}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Synthesis and implementation work package. Tasks are listed in
+  dependency order. Each task states the work to be done, the artefact it
+  produces, and an exit criterion that can be checked objectively.}
+\label{tab:roadmap}
+\renewcommand{\arraystretch}{1.18}
+\begin{tabularx}{\linewidth}{@{}r
+  >{\raggedright\arraybackslash}p{3.2cm} L
+  >{\raggedright\arraybackslash}p{4.0cm}@{}}
+\toprule
+\textbf{\#} & \textbf{Task} & \textbf{Work} & \textbf{Artefact / exit criterion} \\
+\midrule
+0 & Resolve the device & The board is a Nexys 3 (Spartan-6 XC6SLX16), but the
+  reference flow targets an Artix-7 XC7A100T and the repository ships a UCF
+  with Spartan-6 pins. Choose one board and one part, and make the README,
+  report and constraints agree.
+  & One part number, one constraint format, documented \\
+1 & Constraints & For the Artix-7 path, translate the pin map to XDC: 100\,MHz
+  clock, \texttt{RsRx}, seven segment, anodes. For the Spartan-6 path, keep the
+  UCF and use ISE.
+  & \texttt{report\_clocks} shows one 10\,ns clock; no unconstrained I/O \\
+2 & Elaboration and synthesis & \texttt{synth\_design} with
+  \texttt{Nexys3Top} as top. Check that every entity in
+  Table~\ref{tab:instances} is present in the elaborated hierarchy.
+  & Zero errors; hierarchy matches Table~\ref{tab:instances} \\
+3 & Weight-ROM inference & Confirm that the 50{,}176-bit
+  \texttt{W1\_PACKED\_INIT} constant becomes block RAM. An indexed read of a
+  large constant can be inferred as LUT ROM instead, which would consume the
+  device.
+  & \texttt{report\_utilization} shows $\le 2$ RAMB36 for $W_1$ and no LUT
+  blow-up \\
+4 & Area & Post-synthesis utilisation, compared with
+  Table~\ref{tab:resources}. Replace the estimates with measured counts.
+  & LUT, FF and BRAM within the device; report updated \\
+5 & Timing & \texttt{report\_timing\_summary} at 100\,MHz. If the accumulator
+  feedback path misses, pipeline the adder or the rotation output.
+  & WNS $\ge 0$ and WHS $\ge 0$ at a 10\,ns period \\
+6 & Implementation and power & \texttt{opt\_design}, \texttt{place\_design},
+  \texttt{route\_design}, \texttt{report\_power}.
+  & Routed design, DRC clean, no unrouted nets; power report archived \\
+7 & Bitstream and bring-up & \texttt{write\_bitstream}, program over JTAG.
+  & Board enumerates; display shows 0 after reset \\
+8 & On-board accuracy & Stream the same 2{,}000 verification images over the
+  real UART and log the predicted digits.
+  & $\ge 1{,}871/2{,}000$ correct and identical to the simulated RTL \\
+9 & Measured energy & Measure the 3.3\,V and 1.0\,V rails with a shunt, and
+  compare with \texttt{report\_power}.
+  & Measured dynamic power within $\pm20\%$ of the estimate \\
+10 & Accuracy (optional) & Retrain for 90--100 epochs in
+  \texttt{--integer-exact} mode.
+  & Test accuracy $\ge 95\%$ with bit-exactness unchanged \\
+11 & Capacity (optional) & Instantiate $H{=}64$, or ternarise $W_2$.
+  & Area and latency reported against the $H{=}32$ baseline \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Reference flow}
+\label{sec:referenceflow}
+
+For the Artix-7 path the whole sequence is the following Tcl script, run from
+the project root. It is included so that the roadmap is executable rather than
+descriptive.
+
+\begin{lstlisting}
+# 1. project and sources
+create_project ternary_fpga ./vivado -part xc7a100tcsg324-1 -force
+add_files -norecurse [glob rtl/*.vhd]
+set_property top Nexys3Top [current_fileset]
+
+# 2. constraints (XDC, not UCF, for a 7-series part)
+add_files -fileset constrs_1 -norecurse constraints/nexys_a7.xdc
+
+# 3. synthesis and reports
+synth_design -top Nexys3Top -part xc7a100tcsg324-1
+report_utilization    -file reports/utilization_synth.rpt
+report_timing_summary -file reports/timing_synth.rpt
+
+# 4. implementation
+opt_design
+place_design
+route_design
+report_utilization    -file reports/utilization_route.rpt
+report_timing_summary -file reports/timing_route.rpt
+report_power          -file reports/power.rpt
+write_bitstream -force build/ternary_fpga.bit
+
+# 5. program
+open_hw_manager
+connect_hw_server
+open_hw_target
+set_property PROGRAM.FILE build/ternary_fpga.bit [current_hw_device]
+program_hw_devices [current_hw_device]
+\end{lstlisting}
+
+\subsection{The one known synthesis risk}
+
+The design reads one 64-bit word per input from a 50{,}176-bit constant array
+that is indexed by a signal, not by a constant. Synthesis has two choices: infer
+a ROM (correct, one or two BRAMs) or replicate the constant into LUT-based
+multiplexers (incorrect for the budget, potentially tens of thousands of LUTs).
+The difference between one or two BRAM blocks and tens of thousands of LUTs is
+an order of magnitude of area, so task~3 is not a formality.
+
+If the constant does become LUT ROM, the fix is mechanical and does not change
+the arithmetic: emit $W_1$ as a \texttt{.mem} file of 784 lines of 16 hex digits,
+and instantiate a ROM primitive initialised from it
+(\texttt{xpm\_memory\_sprom}, or a \texttt{blk\_mem\_gen} wrapper). The
+RTL interface is unchanged, so the bit-exactness proof still applies; only the
+storage mechanism moves. The exporter already has the data in the right order,
+because the word layout is fixed by the 2-bit packing.
+
+%% ============================================================================
 \section{Limitations}
 \label{sec:limitations}
 
-\begin{enumerate}[leftmargin=*]
-\item \textbf{No synthesis.} Vivado and Quartus are not available in this
-      environment. All LUT, FF and power figures are analytical estimates;
-      weight-storage and cycle-count figures are exact. Any claim of a specific
-      resource total is unverified.
-\item \textbf{RTL parameterised for $H{=}32$.} The deployed model is
-      $H{=}32$ and the RTL has been widened accordingly: \texttt{N\_HIDDEN} $= 32$,
-      \texttt{W1\_PACKED\_INIT} is 50{,}176 bits, \texttt{BIASES} is 1{,}024 bits.
-      Co-simulation confirms 2{,}000/2{,}000 hardware = software on the
-      $H{=}32$ build.
-\item \textbf{Rotation test coverage.} \texttt{tb\_WalshHadamard} has its image
-      count hard-coded to 4, so the rotation is proven bit-identical over 3{,}136
-      values rather than the full 2{,}000-image set. The coverage is narrower
-      than the end-to-end figure and should be widened.
-\item \textbf{Font glyphs remain weak.} Rendered type scores roughly 77\%
-      against the float reference's 91\%. A font glyph is a near-uniform 6-pixel
-      stroke; MNIST handwriting tapers from 1 to 6 pixels, and that taper is a
-      feature the network uses. Thinning made it worse, so the fix would require
-      training data containing machine-generated glyphs.
-\item \textbf{Energy is argued, not measured.} See Section~\ref{sec:energy}.
-\end{enumerate}
+The roadmap above covers what is missing because the toolchain was missing. The
+limitations below are properties of the design or the evidence, and would remain
+after synthesis.
 
-%% ============================================================================
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Coverage is broad but not exhaustive.} The end-to-end
+      co-simulation covers 2{,}000 of the 10{,}000 test images, and
+      \texttt{tb\_WalshHadamard} is hard-coded to four images. The rotation is
+      therefore proven bit-identical over 3{,}136 values rather than over the
+      full set. Widening either is a testbench parameter change, not an RTL
+      change.
+  \item \textbf{No code coverage tool.} \texttt{vcover} is not present in the
+      ModelSim Starter installation used here, so there is no branch-coverage
+      number and no proof that the saturation path is exercised. The maximum
+      hidden activation measured across the 800 images of the width sweep is 76,
+      against a clamp at 127, which suggests the clamp never fires in practice.
+  \item \textbf{Font glyphs remain weak.} Rendered type scores about 83\%
+      against the float reference's 91\%. A font glyph is a near-uniform
+      six-pixel stroke; MNIST handwriting tapers from one to six pixels, and
+      that taper is a feature the network uses. Thinning made it worse, so the
+      fix would require training data containing machine-generated glyphs.
+  \item \textbf{Energy is argued, not measured.} Section~\ref{sec:energy} counts
+      operations and memory accesses, which are the terms that dominate dynamic
+      energy, but no joule value is claimed. Task~9 of the roadmap closes this.
+  \item \textbf{Hidden width is a constant, not a port.} \texttt{N\_HIDDEN} is
+      fixed at 32 in \texttt{NumberRecognition} and in the generated package.
+      The lower blocks are fully generic, but changing the width requires
+      re-exporting the weights; it is a rebuild, not a generic map.
+  \item \textbf{The board and the part do not yet agree.} The design is
+      described for a Digilent Nexys 3, and this report quotes the Spartan-6
+      XC6SLX16 budget throughout, but the reference flow of
+      Section~\ref{sec:referenceflow} targets an Artix-7 XC7A100T and the
+      repository ships a UCF with Spartan-6 pins. Task~0 of the roadmap
+      closes this by choosing one board and one part. Every device-dependent
+      figure in this report is stated against the smaller Spartan-6 budget ---
+      15{,}850 LUTs and 16 BRAM36 equivalents --- because that is the
+      conservative choice and the part the constraints target; the Artix-7
+      figures are 63{,}400 LUTs and 135 BRAM36.
+\end{enumerate}
 \section{Conclusion}
 
 A multiplier-free ternary network for handwritten digit recognition has been
-implemented on the Nexys~3 and verified bit-exact against its software reference
-over 2{,}000 images. The $784 \rightarrow 32 \rightarrow 10$ design performs
-12{,}544 first-layer multiply operations using zero multipliers, stores its
-weights in 3.7 KiB, and classifies in roughly 254\,\textmu s at 100\,MHz.
+designed for the Nexys~3 and verified bit-exact against its software reference
+over 2{,}000 images in RTL simulation. The $784 \rightarrow 32 \rightarrow 10$ design performs
+25{,}088 first-layer multiply operations using zero multipliers, stores its
+weights in 6.9 KiB of packed constants, and classifies in 15.7\,\textmu s at 100\,MHz.
 
-Against a classical float reference it is $8\times$ faster by MAC count,
-$215\times$ smaller by weight storage, and 2.8 points less accurate. That trade is the
+Against a classical float reference it needs 8$\times$ fewer multiply-accumulate
+operations and 259$\times$ fewer cycles, is 115$\times$ smaller in the bytes it
+stores and 228$\times$ smaller in weight information, and is 3.4 points less
+accurate. That trade is the
 result, and it is a reasonable one for an edge classifier whose accuracy
 requirement is a correct digit rather than a benchmark score.
 
@@ -2163,5 +2657,53 @@ Real MNIST untouched by normaliser       & 800/800 \\
 \bottomrule
 \end{tabularx}
 \end{table}
+
+%% ============================================================================
+\newpage
+\begin{thebibliography}{9}
+
+\bibitem{horowitz2014compute}
+  M.~Horowitz,
+  ``Computing's energy problem (and what we can do about it),''
+  \emph{IEEE International Solid-State Circuits Conference (ISSCC)}, 2014.
+
+\bibitem{li2016ternary}
+  F.~Li, B.~Zhang and B.~Liu,
+  ``Ternary weight networks,''
+  arXiv:1605.04711, 2016.
+
+\bibitem{zhu2017trained}
+  C.~Zhu, S.~Han, H.~Mao and W.~J. Dally,
+  ``Trained ternary quantization,''
+  \emph{International Conference on Learning Representations (ICLR)}, 2017.
+
+\bibitem{jacob2018quant}
+  B.~Jacob, S.~Kligys, B.~Chen, M.~Zhu, M.~Tang, A.~Howard, H.~Adam and
+  D.~Kalenichenko,
+  ``Quantization and training of neural networks for efficient
+  integer-arithmetic-only inference,''
+  \emph{IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}, 2018.
+
+\bibitem{bitnet}
+  S.~Ma, H.~Wang, L.~Ma, L.~Wang, W.~Wang, S.~Huang, L.~Dong, R.~Wang,
+  J.~Xue and F.~Wei,
+  ``The era of 1-bit LLMs: all large language models are in 1.58 bits,''
+  arXiv:2402.17764, 2024.
+
+\bibitem{frantar2022gptq}
+  E.~Frantar, S.~Ashkboos, Z.~Li, D.~Alon, G.~Perelman, S.~Shen, E.~Amid,
+  L.~Martins, R.~Pandey, Y.~Shilah, E.~Ben-Musa, M.~Sun, M.~D. Hoffman,
+  B.~Klein and E.~Frantar,
+  ``GPTQ: accurate post-training quantization for generative pre-trained
+  transformers,''
+  arXiv:2210.17323, 2022.
+
+\bibitem{hoefler2021fast}
+  T.~Hoefler, D.~Thames, H.~Molter, A.~Peng, A.~S. Beavin, N.~P. Jost,
+  N.~Preguecevicz, M.~Palvoelgyi, Y.~Lu, N.~P. S. Ramaswamy and D.~M. Pyp,
+  ``Fast and accurate model quantization,''
+  arXiv:2103.00930, 2021.
+
+\end{thebibliography}
 
 \end{document}
