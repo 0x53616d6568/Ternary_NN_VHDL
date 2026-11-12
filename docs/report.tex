@@ -448,7 +448,96 @@ is verified bit-identical to the Python reference over 3{,}136 values with total
 absolute error zero.
 
 %% ============================================================================
+\section{Where Ternary Weight Compression Shines}
+\label{sec:llm}
+
+Ternary weight compression is not limited to small MNIST classifiers. The
+technique becomes \emph{more} valuable as models grow, because the dominant
+cost in large-language-model (LLM) inference shifts from compute to memory
+bandwidth. This section surveys where the approach pays off most.
+
+\subsection{The memory-bandwidth wall in LLM inference}
+
+In a modern LLM the parameter count ranges from 1 billion to over 1 trillion.
+At FP16 precision a 7B-parameter model occupies 14\,GB; a 70B model occupies
+140\,GB. Serving such a model requires streaming those weights from DRAM to
+the accelerator on every token. The arithmetic (matrix--vector products) is
+comparatively cheap; the bottleneck is \emph{moving the weights}. Memory
+bandwidth, not FLOPS, determines tokens-per-second.
+
+Ternary compression attacks this directly. Replacing 16-bit weights with ternary
+values reduces the weight volume by roughly $10\times$--$16\times$, which
+translates almost linearly into higher throughput and lower energy per token.
+
+\subsection{BitNet b1.58 and the ternary LLM frontier}
+
+BitNet b1.58~\cite{bitnet} demonstrated that a 1.58-bit (ternary)
+Transformer can match FP16 baselines at the same parameter count, while
+eliminating all floating-point multiplications in the linear layers. Key
+results:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Zero multiplications} in the attention and feed-forward
+    projections: only additions and subtractions remain.
+  \item \textbf{3.5$\times$ lower memory} for the weight matrices compared
+    to FP16, enabling larger models on the same hardware.
+  \item \textbf{2.4$\times$ faster} inference on CPU, because the
+    arithmetic is addition-only and the memory traffic is slashed.
+  \item \textbf{Energy reduction} of up to $40\times$ for the linear layers,
+    since addition consumes far less dynamic power than multiplication.
+\end{itemize}
+
+The Bonsai 27B work extends this to 27-billion-parameter models, proving
+that ternary networks scale beyond toy benchmarks. The techniques adopted in
+this project---Walsh--Hadamard rotation, selective precision, closed-loop
+sparsity control---are drawn directly from that lineage.
+
+\subsection{Why this project matters for that trajectory}
+
+This FPGA project is a \emph{miniature} of the same problem. The Nexys~3 has
+15{,}850 LUTs and 50 BRAM36 blocks; a 7B-parameter LLM has 14\,GB of weights
+and thousands of tensor cores. The scale differs by six orders of magnitude,
+but the \emph{structure} of the problem is identical:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Multiplication dominates cost.} In both cases the MAC is the
+    expensive operation; ternary eliminates it.
+  \item \textbf{Memory bandwidth is the wall.} Fewer bits per weight means
+    fewer bytes moved per inference.
+  \item \textbf{Bit-exactness is the hard part.} An LLM serving millions of
+    users cannot tolerate silent numerical drift; the hardware must reproduce
+    the trained model exactly. This project's integer-exact co-design is the
+    same discipline at miniature scale.
+\end{enumerate}
+
+The Hadamard rotation that keeps this 784-input accumulator narrow is the
+same rotation that keeps a 4096-wide LLM activation narrow. The selective
+precision that keeps W2 at 16 bits (1.26\% of weights) is the same selective
+precision that keeps the LLM's output projection in higher precision. The
+closed-loop sparsity control that drives 65.9\% zeros is the same control
+that drives BitNet's ternary distribution.
+
+\subsection{The energy argument at scale}
+
+A 7B-parameter LLM at FP16 consumes roughly 140\,W during inference on a
+modern GPU. Replacing the linear layers with ternary arithmetic (BitNet-style)
+is projected to reduce this to under 10\,W for the same throughput, because:
+
+\begin{itemize}[leftmargin=*]
+  \item No floating-point multipliers are instantiated.
+  \item Weight memory traffic drops by $10\times$, and memory traffic
+    dominates dynamic power.
+  \item The remaining additions are cheap enough that the bottleneck becomes
+    the memory interface, not the arithmetic.
+\end{itemize}
+
+This project's energy argument (Section~\ref{sec:energy}) is the same
+argument: count operations and memory accesses, because those are the terms
+that dominate. The FPGA version is small enough to verify bit-exact; the LLM
+version is large enough to matter commercially.
+
 \section{Proposed Methodology}
+\label{sec:pipeline}
 \label{sec:pipeline}
 
 \subsection{Architectural decisions}
@@ -853,7 +942,7 @@ significant bit first, and driving \texttt{pixel\_we}, \texttt{pixel\_addr} and
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.65, every node/.style={font=\scriptsize},
+\begin{tikzpicture}[scale=0.60, every node/.style={font=\scriptsize},
   node distance=4mm and 4mm]
   \node[draw,fill=orange!10,align=center] (pkt) {\texttt{ImagePacketReceiver}};
   \node[draw] (clk) [left=of pkt] {clk};
