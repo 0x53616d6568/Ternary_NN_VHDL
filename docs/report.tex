@@ -122,6 +122,31 @@ and energy, which are the metrics that matter for an edge classifier.
 \section{Introduction}
 \label{sec:intro}
 
+\subsection{Probl\'ematique}
+\label{sec:problematique}
+
+Embedded neural-network inference is constrained by three resources: silicon
+area, latency and energy. The dominant term in all three is the
+multiply--accumulate (MAC) unit. A conventional fully-connected layer with
+$n$ inputs and $m$ outputs requires $nm$ multipliers, each occupying on the
+order of a thousand LUTs on a 7-series FPGA. A $784 \rightarrow 256$ layer
+therefore cannot fit on the 15{,}850 LUTs available on a Nexys~3 (Artix-7
+XC7A100T). The problem addressed by this work is: \emph{how to deploy a
+useful MNIST classifier on a device that cannot hold a single conventional
+hidden layer, without sacrificing the ability to verify the result.}
+
+\subsection{Proposed solution}
+\label{sec:solution}
+
+The proposed solution is a multiplier-free ternary inference datapath. By
+restricting the first-layer weights to $\{-1,0,+1\}$, multiplication collapses
+into a sign flip, a mask or a wire, eliminating all DSP usage in the dominant
+layer. A Walsh--Hadamard rotation of the pixel bus keeps the accumulator
+narrow, and an \texttt{integer-exact} training mode ensures the RTL reproduces
+the PyTorch model bit-for-bit. The design is $784 \rightarrow 32 \rightarrow 10$,
+stores its weights in 3.5 KiB, performs zero multipliers in the first layer, and
+classifies in 254\,\textmu s at 100\,MHz, at 94.61\% MNIST accuracy.
+
 \subsection{Why ternary networks}
 
 Neural network inference on an embedded device is constrained by three
@@ -222,7 +247,7 @@ accuracy actively worse.
 \end{enumerate}
 
 %% ============================================================================
-\section{The Classical Reference}
+\section{Related Work: Classical Reference}
 \label{sec:classical}
 
 \subsection{Architecture}
@@ -280,7 +305,7 @@ operations and memory accesses, which \emph{is} measurable, and by stating
 explicitly which parts of the argument are inference.
 
 %% ============================================================================
-\section{Ternary Quantisation}
+\section{Preliminaries: Ternary Weight Compression}
 \label{sec:ternary}
 
 \subsection{Weight encoding and the cost of a ternary weight}
@@ -423,7 +448,7 @@ is verified bit-identical to the Python reference over 3{,}136 values with total
 absolute error zero.
 
 %% ============================================================================
-\section{From Model to Hardware}
+\section{Proposed Methodology}
 \label{sec:pipeline}
 
 \subsection{Architectural decisions}
@@ -505,7 +530,7 @@ benchmark submission the answer is clearly no; for an interactive drawing tool i
 is clearly yes. Both models are retained.
 
 %% ============================================================================
-\section{Hardware Architecture}
+\section{Hardware Implementation}
 \label{sec:hardware}
 
 \subsection{Design overview}
@@ -747,13 +772,13 @@ on-board oscillator. It contains no algorithmic logic.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 10mm]
-  \node[draw,fill=gray!14,align=center] (board) {\texttt{Nexys3Top}\\top level};
-  \node[draw] (clk) [left=of board] {100 MHz};
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
+  \node[draw,fill=gray!14,align=center] (board) {\texttt{Nexys3Top}};
+  \node[draw] (clk) [left=of board] {clk100};
   \node[draw] (rx) [left=of clk] {RsRx};
-  \node[draw] (seg) [right=of board] {seg (7)};
-  \node[draw] (an) [right=of seg] {an (4)};
+  \node[draw] (seg) [right=of board] {seg};
+  \node[draw] (an) [right=of seg] {an};
   \draw[->] (rx) -- (board);
   \draw[->] (clk) -- (board);
   \draw[->] (board) -- (seg);
@@ -785,13 +810,13 @@ assembles \texttt{data\_out} and pulses \texttt{data\_valid}.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 10mm]
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
   \node[draw,fill=orange!14,align=center] (uart) {\texttt{UARTReceiver}};
   \node[draw] (clk) [left=of uart] {clk};
-  \node[draw] (rx) [left=of clk] {serial\_in (1)};
-  \node[draw] (dout) [right=of uart] {data\_out (8)};
-  \node[draw] (dvalid) [right=of dout] {data\_valid (1)};
+  \node[draw] (rx) [left=of clk] {serial\_in};
+  \node[draw] (dout) [right=of uart] {data\_out};
+  \node[draw] (dvalid) [right=of dout] {data\_valid};
   \draw[->] (rx) -- (uart);
   \draw[->] (clk) -- (uart);
   \draw[->] (uart) -- (dout);
@@ -828,16 +853,16 @@ significant bit first, and driving \texttt{pixel\_we}, \texttt{pixel\_addr} and
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 10mm]
+\begin{tikzpicture}[scale=0.65, every node/.style={font=\scriptsize},
+  node distance=4mm and 4mm]
   \node[draw,fill=orange!10,align=center] (pkt) {\texttt{ImagePacketReceiver}};
   \node[draw] (clk) [left=of pkt] {clk};
-  \node[draw] (bytein) [left=of clk] {byte\_in (8)};
-  \node[draw] (bvalid) [left=of bytein] {byte\_valid (1)};
-  \node[draw] (we) [right=of pkt] {pixel\_we (1)};
-  \node[draw] (addr) [right=of we] {pixel\_addr (10)};
-  \node[draw] (data) [right=of addr] {pixel\_data (1)};
-  \node[draw] (done) [right=of data] {image\_done (1)};
+  \node[draw] (bytein) [left=of clk] {byte\_in};
+  \node[draw] (bvalid) [left=of bytein] {byte\_valid};
+  \node[draw] (we) [right=of pkt] {pixel\_we};
+  \node[draw] (addr) [right=of we] {pixel\_addr};
+  \node[draw] (data) [right=of addr] {pixel\_data};
+  \node[draw] (done) [right=of data] {image\_done};
   \draw[->] (bytein) -- (pkt);
   \draw[->] (clk) -- (pkt);
   \draw[->] (bvalid) -- (pkt);
@@ -873,13 +898,13 @@ segment pattern.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 10mm]
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
   \node[draw,fill=orange!6,align=center] (seg) {\texttt{SevenSegmentDisplay}};
   \node[draw] (clk) [left=of seg] {clk};
-  \node[draw] (digit) [left=of clk] {digit (4)};
-  \node[draw] (segments) [right=of seg] {segments (8)};
-  \node[draw] (anodes) [right=of segments] {anodes (4)};
+  \node[draw] (digit) [left=of clk] {digit};
+  \node[draw] (segments) [right=of seg] {segments};
+  \node[draw] (anodes) [right=of segments] {anodes};
   \draw[->] (digit) -- (seg);
   \draw[->] (clk) -- (seg);
   \draw[->] (seg) -- (segments);
@@ -936,14 +961,14 @@ key generics are:
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
   \node[draw,fill=green!8,align=center] (nr) {\texttt{NumberRecognition}};
   \node[draw] (clk) [left=of nr] {clk};
-  \node[draw] (we) [left=of clk] {pixel\_write\_enable (1)};
-  \node[draw] (addr) [left=of we] {pixel\_write\_addr (10)};
-  \node[draw] (data) [left=of addr] {pixel\_write\_data (1)};
-  \node[draw] (digit) [right=of nr] {digit (4)};
+  \node[draw] (we) [left=of clk] {pixel\_we};
+  \node[draw] (addr) [left=of we] {pixel\_addr};
+  \node[draw] (data) [left=of addr] {pixel\_data};
+  \node[draw] (digit) [right=of nr] {digit};
   \draw[->] (we) -- (nr);
   \draw[->] (clk) -- (nr);
   \draw[->] (addr) -- (nr);
@@ -1004,16 +1029,16 @@ emits the rotated bus with \texttt{out\_valid}.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
+\begin{tikzpicture}[scale=0.70, every node/.style={font=\scriptsize},
+  node distance=5mm and 5mm]
   \node[draw,fill=blue!10,align=center] (wh) {\texttt{WalshHadamard}};
   \node[draw] (clk) [left=of wh] {clk};
-  \node[draw] (start) [left=of clk] {start (1)};
-  \node[draw] (valid) [left=of start] {in\_valid (1)};
-  \node[draw] (idx) [left=of valid] {in\_index (10)};
-  \node[draw] (data) [left=of idx] {in\_data (1)};
-  \node[draw] (oval) [right=of wh] {out\_valid (1)};
-  \node[draw] (odata) [right=of oval] {out\_data (784$\times$4)};
+  \node[draw] (start) [left=of clk] {start};
+  \node[draw] (valid) [left=of start] {in\_valid};
+  \node[draw] (idx) [left=of valid] {in\_index};
+  \node[draw] (data) [left=of idx] {in\_data};
+  \node[draw] (oval) [right=of wh] {out\_valid};
+  \node[draw] (odata) [right=of oval] {out\_data};
   \draw[->] (start) -- (wh);
   \draw[->] (clk) -- (wh);
   \draw[->] (valid) -- (wh);
@@ -1135,16 +1160,16 @@ neurons, so the same neuron can be reused at any depth.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
   \node[draw,fill=green!8,align=center] (nl) {\texttt{NeuronLayer}};
   \node[draw] (clk) [left=of nl] {clk};
-  \node[draw] (start) [left=of clk] {Start (1)};
-  \node[draw] (fc) [left=of start] {FinalCycle (1)};
-  \node[draw] (wd) [left=of fc] {WData (64)};
-  \node[draw] (x) [left=of wd] {X (4)};
-  \node[draw] (bias) [left=of x] {Biases (1024)};
-  \node[draw] (hid) [right=of nl] {Hidden (256)};
+  \node[draw] (start) [left=of clk] {Start};
+  \node[draw] (fc) [left=of start] {FinalCycle};
+  \node[draw] (wd) [left=of fc] {WData};
+  \node[draw] (x) [left=of wd] {X};
+  \node[draw] (bias) [left=of x] {Biases};
+  \node[draw] (hid) [right=of nl] {Hidden};
   \draw[->] (start) -- (nl);
   \draw[->] (clk) -- (nl);
   \draw[->] (fc) -- (nl);
@@ -1304,16 +1329,16 @@ The sequential dataflow edge.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
+\begin{tikzpicture}[scale=0.80, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
   \node[draw,fill=green!14,align=center] (acc) {\texttt{Accumulator}};
   \node[draw] (clk) [left=of acc] {clk};
-  \node[draw] (load) [left=of clk] {Load (1)};
-  \node[draw] (lv) [left=of load] {LoadValue (R)};
-  \node[draw] (av) [left=of lv] {AddValue (R)};
-  \node[draw] (fc) [left=of av] {FinalCycle (1)};
-  \node[draw] (cl) [left=of fc] {Clamped (R)};
-  \node[draw] (reg) [right=of acc] {Reg (R)};
+  \node[draw] (load) [left=of clk] {Load};
+  \node[draw] (lv) [left=of load] {LoadValue};
+  \node[draw] (av) [left=of lv] {AddValue};
+  \node[draw] (fc) [left=of av] {FinalCycle};
+  \node[draw] (cl) [left=of fc] {Clamped};
+  \node[draw] (reg) [right=of acc] {Reg};
   \draw[->] (load) -- (acc);
   \draw[->] (clk) -- (acc);
   \draw[->] (lv) -- (acc);
@@ -1423,13 +1448,13 @@ acceptable because it accounts for 1.26\% of the weights.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
   \node[draw,fill=orange!8,align=center] (dl) {\texttt{DenseLayer}};
-  \node[draw] (a) [left=of dl] {A (N$\times$D)};
-  \node[draw] (w) [left=of a] {Weights (N$\times$M$\times$W)};
-  \node[draw] (b) [left=of w] {Biases (M$\times$A)};
-  \node[draw] (y) [right=of dl] {Y (M$\times$O)};
+  \node[draw] (a) [left=of dl] {A};
+  \node[draw] (w) [left=of a] {Weights};
+  \node[draw] (b) [left=of w] {Biases};
+  \node[draw] (y) [right=of dl] {Y};
   \draw[->] (a) -- (dl);
   \draw[->] (w) -- (dl);
   \draw[->] (b) -- (dl);
@@ -1492,13 +1517,13 @@ Ten signed scores to a four-bit class index, fully combinational.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.85, every node/.style={font=\scriptsize},
-  node distance=8mm and 8mm]
-  \node[draw,fill=gray!14,align=center] (mw) {\texttt{ModelWeights}\\package};
-  \node[draw] (w1) [left=of mw] {W1\_PACKED\_INIT (50176)};
-  \node[draw] (b1) [left=of w1] {B1\_INIT (1024)};
-  \node[draw] (w2) [right=of mw] {W2\_INIT (5120)};
-  \node[draw] (b2) [right=of w2] {B2\_INIT (320)};
+\begin{tikzpicture}[scale=0.75, every node/.style={font=\scriptsize},
+  node distance=6mm and 6mm]
+  \node[draw,fill=gray!14,align=center] (mw) {\texttt{ModelWeights}};
+  \node[draw] (w1) [left=of mw] {W1};
+  \node[draw] (b1) [left=of w1] {B1};
+  \node[draw] (w2) [right=of mw] {W2};
+  \node[draw] (b2) [right=of w2] {B2};
   \draw[->] (w1) -- (mw);
   \draw[->] (b1) -- (mw);
   \draw[->] (mw) -- (w2);
