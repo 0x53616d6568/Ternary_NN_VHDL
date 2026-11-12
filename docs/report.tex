@@ -68,7 +68,7 @@
   linkcolor=blue!50!black,
   citecolor=blue!50!black,
   urlcolor=blue!50!black,
-  pdftitle={Ternary Neural Network Inference for MNIST on the Nexys 3 FPGA},
+  pdftitle={Ternary Neural Network Inference for MNIST on an FPGA},
   pdfauthor={Project Report}
 }
 
@@ -107,7 +107,7 @@
 {\bfseries\LARGE Ternary Neural Network Inference\par}
 \vspace{0.55cm}
 {\bfseries\Large for Handwritten Digit Recognition\\[0.15cm]
-on the Nexys~3 FPGA\par}
+on an FPGA\par}
 \vspace{1.8cm}
 {\normalsize A multiplier-free $784 \rightarrow 32 \rightarrow 10$ ternary network,\\[0.1cm]
 verified bit-exact against its software reference\par}
@@ -299,6 +299,212 @@ accuracy actively worse.
 \end{enumerate}
 
 %% ============================================================================
+%% ============================================================================
+\section{Ternary Compression in the Wider AI Landscape}
+\label{sec:futures}
+
+The network in this report has 25{,}450 parameters, of which 25{,}408 are
+weights. That is six orders of magnitude
+smaller than a modern language model, and it would be easy to read the project
+as a curiosity that does not generalise. The opposite is true. The constraint
+that shaped this design --- \emph{move fewer bits, and do not multiply} --- is
+now one of the organising constraints of artificial intelligence as a whole.
+This section places the project in that trajectory, and is explicit about which
+claims are shipping practice and which are research.
+
+\subsection{Why the pressure is structural}
+
+Three quantities have grown at different rates over the last decade: model size,
+memory bandwidth, and the energy budget available at the point of use. Model
+size has grown fastest. The consequence is that inference on a large model is
+usually \emph{memory-bound}, not compute-bound: the arithmetic per weight is
+small, so the cost of fetching the weight dominates the cost of using it
+\cite{horowitz2014compute}. Every bit removed from a weight is therefore
+removed from the critical path of every token, every frame and every inference.
+
+This is why compression is not a temporary optimisation. A factor of two in
+weight volume is a factor of two in the dominant term, and that term does not
+disappear when the process node improves. Ternary weights take the argument to
+its limit: two bits per weight, of which one encoding is unused, for an entropy
+of about 1.12 bits per weight in this design (Section~\ref{sec:ternary}).
+
+\subsection{Large language models}
+
+The clearest evidence that ternary weights scale is the BitNet line of work.
+BitNet b1.58 \cite{bitnet} trains a Transformer whose linear-layer weights are
+restricted to $\{-1,0,+1\}$ and reports accuracy matching an FP16 baseline of the
+same parameter count from roughly three billion parameters upward, while:
+
+\begin{itemize}[leftmargin=*]
+  \item eliminating every floating-point multiplication in the attention and
+    feed-forward projections --- only additions and subtractions remain;
+  \item reducing weight memory by about $3.5\times$ relative to FP16, which
+    allows a larger model in the same memory;
+  \item reducing the energy of the linear layers by up to $71\times$ in the
+    authors' arithmetic model, because addition is far cheaper than
+    multiplication and the memory traffic is smaller;
+  \item running about $2.4\times$ faster on CPU, where the bottleneck is
+    memory movement rather than vector throughput.
+\end{itemize}
+
+The mechanism is exactly the one used here. A ternary weight turns a
+multiply--accumulate into an add, a subtract, or nothing; the accumulator and
+the memory interface become the whole datapath. Recent 27-billion-parameter
+ternary models extend the same result to a size where serving cost is a real
+commercial constraint.
+
+Ternary weights are the far end of a curve that the field has already travelled
+most of the way along. Post-training quantisation of large models to three or
+four bits per weight is now routine and is reported to cost little accuracy
+\cite{frantar2022gptq}, and mixed-precision recipes that keep activations at
+eight bits while compressing the weights are the standard way to run these
+models on accelerators \cite{hoefler2021fast}. The division of labour is the
+same as in this design: compress the large matrix, keep the small one wide.
+
+One caveat matters and is often omitted: these results come from \emph{training}
+in ternary from the start, not from rounding a finished FP16 model. Post-hoc
+ternarisation of an existing network degrades badly, which is why this project
+also trains in an integer-exact mode rather than quantising afterwards.
+
+\subsection{Edge, embedded and always-on AI}
+
+At the other end of the scale, the same trade decides whether a product exists
+at all. A microcontroller-class device has tens to hundreds of kilobytes of
+memory and a power budget measured in milliwatts; a wearable or an implant has
+less. In that regime a floating-point unit is a luxury and a multiplier is a
+significant block. Ternary weights fit in on-chip flash, need no DSP slice, and
+turn the accelerator into an adder tree with a small ROM.
+
+The applications are unglamorous and numerous: keyword spotting, gesture
+recognition, vibration-based predictive maintenance, seizure and arrhythmia
+detection, always-on vision wake-up circuits, and sensor fusion in wearables.
+In each case the model is small, the input rate is low, and the energy per
+inference is the product specification. A multiplier-free integer datapath is
+not a compromise there; it is the only way to hit the budget.
+
+This project is a worked example at exactly that scale: 15{,}850 LUTs, no DSP
+slice in the first layer, 6.9 KiB of packed weight constants, 15.7\,\textmu s per image and a
+datapath that is bit-exact against its training model. The number that matters
+for a product is not the 94.61\% alone but the combination of accuracy, area and
+energy that a ternary layer makes possible.
+
+\subsection{Vision, generative models and multimodal systems}
+
+Attention and feed-forward blocks dominate vision Transformers and diffusion
+models in the same way they dominate language models, so weight compression
+transfers directly. The active research questions are different, though. Image
+and video models are more sensitive to activation precision than to weight
+precision, which favours the \emph{selective} approach used here: ternary where
+the weight matrix is large, higher precision where the dynamic range is needed.
+In this design the second layer is kept at 16 bits for exactly that reason, and
+it costs 1.26\% of the weights.
+
+Two further directions are worth naming. The first is on-device generation:
+a ternary backbone with higher-precision adapters can fit a diffusion or
+language model into a phone or a headset, where the alternative is sending every
+request to a datacentre. The second is conditional computation: a third state
+is a natural encoding for ``skip this block'', so ternary logic can gate compute
+as well as compress weights, which is a distinct source of energy savings from
+weight compression itself.
+
+\subsection{Robotics, autonomy and certification}
+
+Robotics combines the edge constraint with a second requirement that software
+accelerators often ignore: determinism. A controller that occasionally produces
+a different answer for the same input is difficult to certify, whether the
+certification regime is automotive, medical or avionics. Integer arithmetic with
+a fixed order of operations has no such ambiguity. The bit-exact property that
+this project enforces for verification is, in a certification context, a safety
+argument: the deployed artefact can be shown to compute exactly the function
+that was validated.
+
+\subsection{Hardware directions}
+
+The compression argument changes what hardware is worth building. Table~\ref{tab:ternaryhw}
+summarises the directions that are currently active, with an honest note on
+maturity.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Hardware directions that exploit ternary or near-ternary weights.
+  ``Maturity'' distinguishes shipping silicon from research prototypes and
+  analytical proposals.}
+\label{tab:ternaryhw}
+\begin{tabularx}{\linewidth}{@{}l Y l@{}}
+\toprule
+\textbf{Direction} & \textbf{Mechanism} & \textbf{Maturity} \\
+\midrule
+FPGA adder-tree accelerators & weights in ROM, one input per cycle, no DSP &
+  shipping (this work) \\
+RISC-V vector extensions & ternary dot-product instructions, packed 2-bit
+  operands & research silicon \\
+Compute-in-memory (RRAM, PCM, MRAM) & the ternary weight is the conductance
+  state; the crossbar performs the MAC & research prototypes \\
+Ternary content-addressable memory & three-state match for gating and
+  early exit & shipping (networking), research (AI) \\
+Integer-only NPUs & 8-bit or lower activations, high-precision accumulators
+  & shipping \\
+Structured sparsity & zeros map to clock gating and skipped cycles & shipping \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Compute-in-memory is the most interesting of these because it removes the
+memory traffic rather than compressing it: if the weight is a conductance, it
+does not have to be fetched at all. Ternary states are attractive there because
+three levels are easy to program and to distinguish, and because the peripheral
+circuitry can be simple. The catch is the same one this project documents in
+Section~\ref{sec:roadmap}: without a synthesis and measurement path, the
+advantage remains analytical.
+
+\subsection{What has to be true for the transition}
+
+Ternary compression is not a free lunch, and the report would be dishonest if it
+implied otherwise. Four conditions have to hold for a system to benefit:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Accuracy must survive.} Locally, this design gives up 3.4
+    accuracy points on the MNIST test set relative to a float reference
+    (94.61\% against 98.05\%). At language-model scale the reported gap is
+    smaller, but it is not zero, and it is task-dependent.
+  \item \textbf{Training must be ternary-aware.} Rounding after training is
+    not equivalent; the model has to see the quantiser during optimisation.
+  \item \textbf{The toolchain must exist.} A quantiser without an exporter, a
+    simulator and a bit-exactness check is a research result, not a product
+    component. The work in Section~\ref{sec:pipeline} exists because that gap
+    is where most compression projects fail.
+  \item \textbf{The metric must be the right one.} If the deployment target is a
+    datacentre GPU with abundant bandwidth, ternary weights buy little. If it is
+    a battery-powered sensor, they buy the product.
+\end{enumerate}
+
+\subsection{A miniature of the same problem}
+
+The four techniques that made this design work are not specific to MNIST.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Rotation before quantisation.} A Walsh--Hadamard transform
+    spreads the input energy so that the accumulator stays narrow. The same
+    rotation, at a larger block size, is what keeps a wide Transformer
+    activation in range.
+  \item \textbf{Selective precision.} The 32$\times$10 output layer stays at 16
+    bits because it is 1.26\% of the weights and carries most of the dynamic
+    range. The same argument applies to the output projection and the embedding
+    table of a language model.
+  \item \textbf{Closed-loop sparsity.} The threshold is adjusted during training
+    to hold a target zero density (65.86\% here), rather than fixed in advance.
+    This is how a ternary model avoids both collapse and useless density.
+  \item \textbf{Bit-exact co-design.} The hardware is not an approximation of
+    the model. At any scale, the moment the two are allowed to diverge, the
+    verification argument disappears.
+\end{itemize}
+
+The scale differs by six orders of magnitude; the structure of the problem does
+not. The Nexys~3 version is small enough to verify completely, which is why it
+is a useful place to learn what a ternary datapath actually costs --- and the
+same accounting is what a language-model accelerator needs, one thousand times
+larger.
 \section{Related Work: Classical Reference}
 \label{sec:classical}
 
@@ -511,213 +717,7 @@ x_0{+}x_1{+}x_2{+}x_3{+}x_4{+}x_5{+}x_6{+}x_7 & \cdots
 implemented in \texttt{WalshHadamard.vhd} as a streaming XOR/adder network. It
 is verified bit-identical to the Python reference over 3{,}136 values with total
 absolute error zero.
-
 %% ============================================================================
-\section{Ternary Compression in the Wider AI Landscape}
-\label{sec:futures}
-
-The network in this report has 25{,}450 parameters, of which 25{,}408 are
-weights. That is six orders of magnitude
-smaller than a modern language model, and it would be easy to read the project
-as a curiosity that does not generalise. The opposite is true. The constraint
-that shaped this design --- \emph{move fewer bits, and do not multiply} --- is
-now one of the organising constraints of artificial intelligence as a whole.
-This section places the project in that trajectory, and is explicit about which
-claims are shipping practice and which are research.
-
-\subsection{Why the pressure is structural}
-
-Three quantities have grown at different rates over the last decade: model size,
-memory bandwidth, and the energy budget available at the point of use. Model
-size has grown fastest. The consequence is that inference on a large model is
-usually \emph{memory-bound}, not compute-bound: the arithmetic per weight is
-small, so the cost of fetching the weight dominates the cost of using it
-\cite{horowitz2014compute}. Every bit removed from a weight is therefore
-removed from the critical path of every token, every frame and every inference.
-
-This is why compression is not a temporary optimisation. A factor of two in
-weight volume is a factor of two in the dominant term, and that term does not
-disappear when the process node improves. Ternary weights take the argument to
-its limit: two bits per weight, of which one encoding is unused, for an entropy
-of about 1.12 bits per weight in this design (Section~\ref{sec:ternary}).
-
-\subsection{Large language models}
-
-The clearest evidence that ternary weights scale is the BitNet line of work.
-BitNet b1.58 \cite{bitnet} trains a Transformer whose linear-layer weights are
-restricted to $\{-1,0,+1\}$ and reports accuracy matching an FP16 baseline of the
-same parameter count from roughly three billion parameters upward, while:
-
-\begin{itemize}[leftmargin=*]
-  \item eliminating every floating-point multiplication in the attention and
-    feed-forward projections --- only additions and subtractions remain;
-  \item reducing weight memory by about $3.5\times$ relative to FP16, which
-    allows a larger model in the same memory;
-  \item reducing the energy of the linear layers by up to $71\times$ in the
-    authors' arithmetic model, because addition is far cheaper than
-    multiplication and the memory traffic is smaller;
-  \item running about $2.4\times$ faster on CPU, where the bottleneck is
-    memory movement rather than vector throughput.
-\end{itemize}
-
-The mechanism is exactly the one used here. A ternary weight turns a
-multiply--accumulate into an add, a subtract, or nothing; the accumulator and
-the memory interface become the whole datapath. Recent 27-billion-parameter
-ternary models extend the same result to a size where serving cost is a real
-commercial constraint.
-
-Ternary weights are the far end of a curve that the field has already travelled
-most of the way along. Post-training quantisation of large models to three or
-four bits per weight is now routine and is reported to cost little accuracy
-\cite{frantar2022gptq}, and mixed-precision recipes that keep activations at
-eight bits while compressing the weights are the standard way to run these
-models on accelerators \cite{hoefler2021fast}. The division of labour is the
-same as in this design: compress the large matrix, keep the small one wide.
-
-One caveat matters and is often omitted: these results come from \emph{training}
-in ternary from the start, not from rounding a finished FP16 model. Post-hoc
-ternarisation of an existing network degrades badly, which is why this project
-also trains in an integer-exact mode rather than quantising afterwards.
-
-\subsection{Edge, embedded and always-on AI}
-
-At the other end of the scale, the same trade decides whether a product exists
-at all. A microcontroller-class device has tens to hundreds of kilobytes of
-memory and a power budget measured in milliwatts; a wearable or an implant has
-less. In that regime a floating-point unit is a luxury and a multiplier is a
-significant block. Ternary weights fit in on-chip flash, need no DSP slice, and
-turn the accelerator into an adder tree with a small ROM.
-
-The applications are unglamorous and numerous: keyword spotting, gesture
-recognition, vibration-based predictive maintenance, seizure and arrhythmia
-detection, always-on vision wake-up circuits, and sensor fusion in wearables.
-In each case the model is small, the input rate is low, and the energy per
-inference is the product specification. A multiplier-free integer datapath is
-not a compromise there; it is the only way to hit the budget.
-
-This project is a worked example at exactly that scale: 15{,}850 LUTs, no DSP
-slice in the first layer, 6.9 KiB of packed weight constants, 15.7\,\textmu s per image and a
-datapath that is bit-exact against its training model. The number that matters
-for a product is not the 94.61\% alone but the combination of accuracy, area and
-energy that a ternary layer makes possible.
-
-\subsection{Vision, generative models and multimodal systems}
-
-Attention and feed-forward blocks dominate vision Transformers and diffusion
-models in the same way they dominate language models, so weight compression
-transfers directly. The active research questions are different, though. Image
-and video models are more sensitive to activation precision than to weight
-precision, which favours the \emph{selective} approach used here: ternary where
-the weight matrix is large, higher precision where the dynamic range is needed.
-In this design the second layer is kept at 16 bits for exactly that reason, and
-it costs 1.26\% of the weights.
-
-Two further directions are worth naming. The first is on-device generation:
-a ternary backbone with higher-precision adapters can fit a diffusion or
-language model into a phone or a headset, where the alternative is sending every
-request to a datacentre. The second is conditional computation: a third state
-is a natural encoding for ``skip this block'', so ternary logic can gate compute
-as well as compress weights, which is a distinct source of energy savings from
-weight compression itself.
-
-\subsection{Robotics, autonomy and certification}
-
-Robotics combines the edge constraint with a second requirement that software
-accelerators often ignore: determinism. A controller that occasionally produces
-a different answer for the same input is difficult to certify, whether the
-certification regime is automotive, medical or avionics. Integer arithmetic with
-a fixed order of operations has no such ambiguity. The bit-exact property that
-this project enforces for verification is, in a certification context, a safety
-argument: the deployed artefact can be shown to compute exactly the function
-that was validated.
-
-\subsection{Hardware directions}
-
-The compression argument changes what hardware is worth building. Table~\ref{tab:ternaryhw}
-summarises the directions that are currently active, with an honest note on
-maturity.
-
-\begin{table}[H]
-\centering
-\small
-\caption{Hardware directions that exploit ternary or near-ternary weights.
-  ``Maturity'' distinguishes shipping silicon from research prototypes and
-  analytical proposals.}
-\label{tab:ternaryhw}
-\begin{tabularx}{\linewidth}{@{}l Y l@{}}
-\toprule
-\textbf{Direction} & \textbf{Mechanism} & \textbf{Maturity} \\
-\midrule
-FPGA adder-tree accelerators & weights in ROM, one input per cycle, no DSP &
-  shipping (this work) \\
-RISC-V vector extensions & ternary dot-product instructions, packed 2-bit
-  operands & research silicon \\
-Compute-in-memory (RRAM, PCM, MRAM) & the ternary weight is the conductance
-  state; the crossbar performs the MAC & research prototypes \\
-Ternary content-addressable memory & three-state match for gating and
-  early exit & shipping (networking), research (AI) \\
-Integer-only NPUs & 8-bit or lower activations, high-precision accumulators
-  & shipping \\
-Structured sparsity & zeros map to clock gating and skipped cycles & shipping \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-Compute-in-memory is the most interesting of these because it removes the
-memory traffic rather than compressing it: if the weight is a conductance, it
-does not have to be fetched at all. Ternary states are attractive there because
-three levels are easy to program and to distinguish, and because the peripheral
-circuitry can be simple. The catch is the same one this project documents in
-Section~\ref{sec:roadmap}: without a synthesis and measurement path, the
-advantage remains analytical.
-
-\subsection{What has to be true for the transition}
-
-Ternary compression is not a free lunch, and the report would be dishonest if it
-implied otherwise. Four conditions have to hold for a system to benefit:
-
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{Accuracy must survive.} Locally, this design gives up 3.4
-    accuracy points on the MNIST test set relative to a float reference
-    (94.61\% against 98.05\%). At language-model scale the reported gap is
-    smaller, but it is not zero, and it is task-dependent.
-  \item \textbf{Training must be ternary-aware.} Rounding after training is
-    not equivalent; the model has to see the quantiser during optimisation.
-  \item \textbf{The toolchain must exist.} A quantiser without an exporter, a
-    simulator and a bit-exactness check is a research result, not a product
-    component. The work in Section~\ref{sec:pipeline} exists because that gap
-    is where most compression projects fail.
-  \item \textbf{The metric must be the right one.} If the deployment target is a
-    datacentre GPU with abundant bandwidth, ternary weights buy little. If it is
-    a battery-powered sensor, they buy the product.
-\end{enumerate}
-
-\subsection{A miniature of the same problem}
-
-The four techniques that made this design work are not specific to MNIST.
-
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Rotation before quantisation.} A Walsh--Hadamard transform
-    spreads the input energy so that the accumulator stays narrow. The same
-    rotation, at a larger block size, is what keeps a wide Transformer
-    activation in range.
-  \item \textbf{Selective precision.} The 32$\times$10 output layer stays at 16
-    bits because it is 1.26\% of the weights and carries most of the dynamic
-    range. The same argument applies to the output projection and the embedding
-    table of a language model.
-  \item \textbf{Closed-loop sparsity.} The threshold is adjusted during training
-    to hold a target zero density (65.86\% here), rather than fixed in advance.
-    This is how a ternary model avoids both collapse and useless density.
-  \item \textbf{Bit-exact co-design.} The hardware is not an approximation of
-    the model. At any scale, the moment the two are allowed to diverge, the
-    verification argument disappears.
-\end{itemize}
-
-The scale differs by six orders of magnitude; the structure of the problem does
-not. The Nexys~3 version is small enough to verify completely, which is why it
-is a useful place to learn what a ternary datapath actually costs --- and the
-same accounting is what a language-model accelerator needs, one thousand times
-larger.
 \section{Proposed Methodology}
 \label{sec:pipeline}
 
@@ -2471,9 +2471,9 @@ an exit criterion, so progress is checkable rather than a matter of opinion.
 \textbf{\#} & \textbf{Task} & \textbf{Work} & \textbf{Artefact / exit criterion} \\
 \midrule
 0 & Resolve the device & The board is a Nexys 3 (Spartan-6 XC6SLX16), but the
-  reference flow targets an Artix-7 XC7A100T and the repository ships a UCF
-  with Spartan-6 pins. Choose one board and one part, and make the README,
-  report and constraints agree.
+  repository also carries a Vivado flow aimed at an Artix-7 XC7A100T while the
+  shipped constraint file uses Spartan-6 pins. Choose one board and one part,
+  and make the README, report and constraints agree.
   & One part number, one constraint format, documented \\
 1 & Constraints & For the Artix-7 path, translate the pin map to XDC: 100\,MHz
   clock, \texttt{RsRx}, seven segment, anodes. For the Spartan-6 path, keep the
@@ -2514,44 +2514,6 @@ an exit criterion, so progress is checkable rather than a matter of opinion.
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\subsection{Reference flow}
-\label{sec:referenceflow}
-
-For the Artix-7 path the whole sequence is the following Tcl script, run from
-the project root. It is included so that the roadmap is executable rather than
-descriptive.
-
-\begin{lstlisting}
-# 1. project and sources
-create_project ternary_fpga ./vivado -part xc7a100tcsg324-1 -force
-add_files -norecurse [glob rtl/*.vhd]
-set_property top Nexys3Top [current_fileset]
-
-# 2. constraints (XDC, not UCF, for a 7-series part)
-add_files -fileset constrs_1 -norecurse constraints/nexys_a7.xdc
-
-# 3. synthesis and reports
-synth_design -top Nexys3Top -part xc7a100tcsg324-1
-report_utilization    -file reports/utilization_synth.rpt
-report_timing_summary -file reports/timing_synth.rpt
-
-# 4. implementation
-opt_design
-place_design
-route_design
-report_utilization    -file reports/utilization_route.rpt
-report_timing_summary -file reports/timing_route.rpt
-report_power          -file reports/power.rpt
-write_bitstream -force build/ternary_fpga.bit
-
-# 5. program
-open_hw_manager
-connect_hw_server
-open_hw_target
-set_property PROGRAM.FILE build/ternary_fpga.bit [current_hw_device]
-program_hw_devices [current_hw_device]
-\end{lstlisting}
 
 \subsection{The one known synthesis risk}
 
@@ -2604,10 +2566,10 @@ after synthesis.
       re-exporting the weights; it is a rebuild, not a generic map.
   \item \textbf{The board and the part do not yet agree.} The design is
       described for a Digilent Nexys 3, and this report quotes the Spartan-6
-      XC6SLX16 budget throughout, but the reference flow of
-      Section~\ref{sec:referenceflow} targets an Artix-7 XC7A100T and the
-      repository ships a UCF with Spartan-6 pins. Task~0 of the roadmap
-      closes this by choosing one board and one part. Every device-dependent
+      XC6SLX16 budget throughout, but the repository also ships a Vivado flow
+      aimed at an Artix-7 XC7A100T while the constraint file targets Spartan-6
+      pins. Task~0 of the roadmap closes this by choosing one board and one
+      part. Every device-dependent
       figure in this report is stated against the smaller Spartan-6 budget ---
       15{,}850 LUTs and 16 BRAM36 equivalents --- because that is the
       conservative choice and the part the constraints target; the Artix-7
