@@ -117,6 +117,14 @@ begin
     report "Hardware digit correct vs MNIST label: " & integer'image(correct)
            & " / " & integer'image(image_number) severity note;
 
+    -- Self-checking: a mismatch must abort the run, not just appear in the log.
+    -- Bit-exactness is the contract, so one disagreeing image is a failure.
+    assert model_match = image_number
+      report "FAIL: RTL disagreed with the software model on "
+             & integer'image(image_number - model_match) & " of "
+             & integer'image(image_number) & " images"
+      severity failure;
+
     file_close(vector_file);
     file_close(result_file);
     std.env.stop;

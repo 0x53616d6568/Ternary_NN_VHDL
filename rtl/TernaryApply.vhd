@@ -13,9 +13,9 @@
 --   T(w) = w[1] ? -1 : w[0]
 --
 -- The -1 case is a genuine two's complement negation, not a wire. X is signed
--- and measures -2..+4 on real MNIST data, so -X = ~X + 1 requires a carry. The
--- increment is folded into the adder's carry-in in Accumulator, so no separate
--- incrementer stage is built.
+-- and measures -2..+4 on real MNIST data, so -X = ~X + 1 requires a carry.
+-- Synthesis implements that as an inverter plus the adder's carry-in; no
+-- separate incrementer stage and, critically, no multiplier is inferred.
 --
 -- This is the whole multiplier-free argument in one component. Because T is
 -- restricted to {0,+1,-1}, there is no partial-product array and no Wallace

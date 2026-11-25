@@ -30,7 +30,8 @@ architecture simulation of tb_WalshHadamard is
   signal in_index  : std_logic_vector(9 downto 0) := (others => '0');
   signal in_data   : std_logic := '0';
   signal out_valid : std_logic;
-  signal out_data  : std_logic_vector(N_INPUTS * OUT_WIDTH - 1 downto 0);
+  signal rd_addr   : std_logic_vector(9 downto 0) := (others => '0');
+  signal rd_data   : std_logic_vector(OUT_WIDTH - 1 downto 0);
 begin
   clk <= not clk after CLOCK_PERIOD / 2;
 
@@ -49,7 +50,8 @@ begin
       in_index  => in_index,
       in_data   => in_data,
       out_valid => out_valid,
-      out_data  => out_data
+      rd_addr   => rd_addr,
+      rd_data   => rd_data
     );
 
   stimulus : process
@@ -83,16 +85,19 @@ begin
 
       wait until out_valid = '1' for 100 ns;
 
-      -- Write the rotated bus, 16 values per line, most significant first so
-      -- the file reads in the same order as the flattened vector.
+      -- Walk the read port. The transform output is a memory now, so each value
+      -- is fetched by address rather than sliced out of a 3,136-bit bus. This
+      -- is the same order the MAC engine consumes them in.
+      -- Write the rotated values, 16 per line, so the file reads in the same
+      -- order as the flattened vector.
       chunk := 0;
       for index in 0 to N_INPUTS - 1 loop
+        rd_addr <= std_logic_vector(to_unsigned(index, 10));
+        wait for 1 ns;
         -- textio concatenates bare writes, so each value needs its own leading
         -- space or the numbers run together on the line.
         write(output_line, string'(" "));
-        write(output_line,
-              to_integer(signed(out_data((index + 1) * OUT_WIDTH - 1
-                                         downto index * OUT_WIDTH))));
+        write(output_line, to_integer(signed(rd_data)));
         chunk := chunk + 1;
         if chunk = 16 then
           writeline(result_file, output_line);

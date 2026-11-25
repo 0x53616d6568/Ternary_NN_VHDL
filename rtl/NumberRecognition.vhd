@@ -7,17 +7,18 @@ use ieee.std_logic_1164.all;
 --
 --   784 binary pixels
 --     -> WalshHadamard   blockwise rotation, Bonsai-style, adders only
---     -> TernaryMacEngine 16 lanes, one input per cycle, 784 cycles
---     -> DenseLayer      second layer, 16 x 10, combinational
+--     -> TernaryMacEngine  32 lanes, one input per cycle, 784 cycles
+--     -> DenseLayer      second layer, 32 x 10, combinational
 --     -> ArgMax          predicted digit
 --
--- The first layer is sequential because a parallel 784 x 16 array would need
--- roughly 25,000 LUTs, more than the Artix-7 has. Streaming it needs about 160
--- LUTs and leaves the weights in a block RAM.
+-- The first layer is sequential because a parallel 784 x 32 array would need
+-- roughly 25,000 adders, far more than the 9,112 LUTs a Spartan-6 XC6SLX16
+-- offers. Streaming it needs one adder per hidden unit and leaves the weights
+-- in block RAM.
 --
 -- The weights are read straight out of the ModelWeights package. W1 is stored
 -- transposed and two bits per weight, so the word for input i holds one weight
--- per hidden unit and a single indexed read serves all 16 lanes; synthesis maps
+-- per hidden unit and a single indexed read serves all 32 lanes; synthesis maps
 -- that to one block RAM.
 
 entity NumberRecognition is
@@ -68,29 +69,35 @@ architecture structural of NumberRecognition is
   constant SUM_WIDTH   : integer := 6;
   constant W2_WIDTH    : integer := 16;
 
-  type state_type is (IDLE, MAC_RUN, DONE);
+  type state_type is (IDLE, MAC_RUN, DENSE_RUN, DONE);
   signal state : state_type := IDLE;
 
-  signal rot_done  : std_logic;
+  signal rot_done  : std_logic := '0';
   signal rot_start : std_logic := '0';
-  signal x_bus     : std_logic_vector(N_INPUTS * X_WIDTH - 1 downto 0);
+
+  -- The rotation is a memory now, so the engine addresses one value per cycle
+  -- instead of the top level holding a 3,136-bit bus that had to be sliced with
+  -- a variable index (a 784:1 multiplexer built from LUTs).
+  signal x_addr  : std_logic_vector(9 downto 0) := (others => '0');
+  signal x_value : std_logic_vector(X_WIDTH - 1 downto 0) := (others => '0');
 
   signal mac_start  : std_logic := '0';
-  signal mac_done   : std_logic;
+  signal mac_done   : std_logic := '0';
   signal mac_busy   : std_logic;
-  signal hidden     : std_logic_vector(N_HIDDEN * HIDDEN_WIDTH - 1 downto 0);
+  signal hidden     : std_logic_vector(N_HIDDEN * HIDDEN_WIDTH - 1 downto 0) := (others => '0');
 
   -- Single hidden layer, so there is no second MAC engine. The output layer
   -- reads the first layer's result directly; `hidden2` is kept as an alias so
   -- the port maps below read the same way for either depth.
-  signal hidden2    : std_logic_vector(N_HIDDEN * HIDDEN_WIDTH - 1 downto 0);
+  signal hidden2    : std_logic_vector(N_HIDDEN * HIDDEN_WIDTH - 1 downto 0) := (others => '0');
 
-  signal w_addr  : std_logic_vector(9 downto 0);
-  signal w_data  : std_logic_vector(N_HIDDEN * 2 - 1 downto 0);
-  signal scores  : std_logic_vector(N_CLASSES * ACC_WIDTH - 1 downto 0);
+  signal dense_start : std_logic := '0';
+  signal dense_done  : std_logic := '0';
 
-  signal w1_addr_int : integer range 0 to N_INPUTS - 1;
-  signal w1_word     : unsigned(N_HIDDEN * 2 - 1 downto 0);
+  signal w_addr  : std_logic_vector(9 downto 0) := (others => '0');
+  signal w_data  : std_logic_vector(N_HIDDEN * 2 - 1 downto 0) := (others => '0');
+  signal scores  : std_logic_vector(N_CLASSES * ACC_WIDTH - 1 downto 0) := (others => '0');
+
   signal digit_reg   : std_logic_vector(3 downto 0) := (others => '0');
 begin
   -- The rotation consumes the pixel stream directly. A write to address 0 marks
@@ -113,14 +120,27 @@ begin
       in_index  => pixel_write_addr,
       in_data   => pixel_write_data,
       out_valid => rot_done,
-      out_data  => x_bus
+      rd_addr   => x_addr,
+      rd_data   => x_value
     );
 
   -- One word per input, all N_HIDDEN weights of that input, two bits each.
-  w1_addr_int <= to_integer(unsigned(w_addr));
-  w1_word     <= unsigned(W1_PACKED_INIT(w1_addr_int * (N_HIDDEN * 2) + N_HIDDEN * 2 - 1
-                                         downto w1_addr_int * (N_HIDDEN * 2)));
-  w_data      <= std_logic_vector(w1_word);
+  --
+  -- The read is REGISTERED. A combinational read of this 50,176-bit constant
+  -- cannot be block RAM (BRAM is synchronous), so XST would build it as LUT ROM:
+  -- a 784:1 multiplexer on 64 bits, around 9,600 LUTs, more than the entire
+  -- LX16. Registering the address and the data is what turns it into three
+  -- BRAM18 blocks. TernaryMacEngine accounts for the extra cycle by priming
+  -- address 0 before it consumes the first word.
+  weight_rom : process(clk)
+    variable a : integer range 0 to N_INPUTS - 1;
+  begin
+    if rising_edge(clk) then
+      a := to_integer(unsigned(w_addr));
+      w_data <= W1_PACKED_INIT(a * (N_HIDDEN * 2) + N_HIDDEN * 2 - 1
+                               downto a * (N_HIDDEN * 2));
+    end if;
+  end process;
 
   mac : entity work.TernaryMacEngine
     generic map (
@@ -138,13 +158,14 @@ begin
       done        => mac_done,
       w_read_addr => w_addr,
       w_read_data => w_data,
-      x           => x_bus,
+      x_addr      => x_addr,
+      x_value     => x_value,
       hidden      => hidden
     );
 
   -- Second hidden layer, retained for the two-hidden-layer experiments.
   --
-  -- The shipped model is 784 -> 16 -> 10, a single hidden layer, so this block
+  -- The shipped model is 784 -> 32 -> 10, a single hidden layer, so this block
   -- is not instantiated and its weight memories W3_PACKED_INIT / B3_INIT are
   -- not present in ModelWeights.vhd. Leaving the instantiation in place made
   -- the design fail to elaborate at all:
@@ -185,7 +206,8 @@ begin
 
   hidden2 <= hidden;
 
-  -- Output layer. Only 16 x 10 products, so it stays combinational, and W2 is
+  -- Output layer. Only 32 x 10 products, so it is walked one input per cycle
+  -- with ten multipliers rather than built as 320 combinational ones; W2 is
   -- kept at full precision rather than ternarised: Bonsai's selective-precision
   -- trick, and only 1.3% of the weights.
   output_layer : entity work.DenseLayer
@@ -199,6 +221,9 @@ begin
       USE_RELU     => false
     )
     port map (
+      clk     => clk,
+      start   => dense_start,
+      done    => dense_done,
       A       => hidden2,
       Weights => W2_INIT,
       Biases  => B2_INIT,
@@ -227,7 +252,8 @@ begin
   controller : process(clk)
   begin
     if rising_edge(clk) then
-      mac_start <= '0';
+      mac_start   <= '0';
+      dense_start <= '0';
       case state is
         when IDLE =>
           if rot_done = '1' then
@@ -236,10 +262,18 @@ begin
           end if;
 
         when MAC_RUN =>
-          -- The MAC engine finishes all 16 hidden units; its result is what
+          -- The MAC engine finishes all 32 hidden units; its result is what
           -- the output layer and ArgMax consume. Without this transition the
           -- FSM would never return to IDLE and no further image would be read.
           if mac_done = '1' then
+            dense_start <= '1';
+            state       <= DENSE_RUN;
+          end if;
+
+        when DENSE_RUN =>
+          -- 32 more cycles for the output layer. ArgMax is combinational, so
+          -- `scores` is already valid by the time dense_done arrives.
+          if dense_done = '1' then
             state <= DONE;
           end if;
 

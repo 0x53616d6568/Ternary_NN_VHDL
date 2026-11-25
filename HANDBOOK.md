@@ -8,11 +8,11 @@ were recomputed from the deployed checkpoint and RTL; they are recorded in
 
 ## 1. What this is
 
-A hand-written digit classifier for the Digilent Nexys 3 (Spartan-6 XC6SLX16; see
-the report's roadmap task 0 about the board/part mismatch)
+A hand-written digit classifier for the Digilent Nexys 3 (Spartan-6
+XC6SLX16-CSG324-2)
 built around a **ternary** neural network — every first-layer weight is exactly −1,
-0 or +1 — with **zero multipliers** in the datapath, verified bit-exact against
-the PyTorch model over 2,000 images in RTL simulation. Nothing has been
+0 or +1 — with **zero multipliers** in the ternary layer, verified bit-exact
+against the PyTorch model over 2,000 images in RTL simulation. Nothing has been
 synthesized or run on the board; see the implementation roadmap in the report.
 
 | | |
@@ -200,13 +200,13 @@ The float reference is the project's own 784-256-10 teacher at 98.05% on the
 | | Float 784-256-10 | **Ternary 784-32-10** | ratio |
 |---|---|---|---|
 | Parameters | 203,530 | 25,450 | 8.0× |
-| **Multipliers** | 203,530 | **0** | — |
+| **Multipliers** | 203,530 | **0** in the ternary layer | — |
 | MACs per image | 203,264 | 25,408 | 8.0× |
 | MAC cycles at 100 MHz | 203,264 | **784** | 259× |
-| End-to-end latency | 2.033 ms (analytical) | **15.7 us** (measured) | 129× |
+| End-to-end latency | 2.033 ms (analytical) | **16.1 us** (measured) | 127× |
 | Weight storage (information) | 6,512,960 bit | **28,515 bit** | 228× |
 | Weight storage (encoded) | 6,512,960 bit | **56,640 bit** | 115× |
-| BRAM36 for weights | 177 | **1.5** | 118× |
+| BRAM36 for weights | 177 | **2** | 89× |
 | Entropy per weight | 32.0 bit | **1.122 bit** | 28.5× |
 | MNIST test | **98.05%** | 94.61% | −3.4 pts |
 
@@ -249,8 +249,8 @@ A[h][k]        accumulator of hidden unit h after k input passes
       A[h][k+1] = A[h][k] + Δ[h][k]              accumulate freely
       hidden[h] = Clamp( A[h][783], 0, 127 )     final cycle only
 
- ── C. second layer — COMBINATIONAL ──────────────────────────
-      scores[d] = B2[d] + Σ A[h] · W2[d][h]      d = 0…9
+ ── C. second layer — SEQUENTIAL, 10 MULTIPLIERS ─────────────
+      scores[d] = B2[d] + Σ A[h] · W2[d][h]      d = 0…9, 32 cycles
 
  ── D. classify ──────────────────────────────────────────────
       Class_id = argmax over d of scores[d]
@@ -306,17 +306,18 @@ and it was a real defect class during verification.
 
 | equation | cycles | block | class |
 |---|---|---|---|
-| A. rotate | 784, **overlapped** | `WalshHadamard` | streaming combinational |
-| B. MAC | **784** | `TernaryMacEngine` | **sequential dataflow** |
-| C. output | 0 | `DenseLayer` | combinational |
+| A. rotate | 784, **overlapped** | `WalshHadamard` | streaming, lane banks |
+| B. MAC | **786** (784 + 2 prime) | `TernaryMacEngine` | **sequential dataflow** |
+| C. output | 32 | `DenseLayer` | sequential, 10 multipliers |
 | D. argmax | 0 | `ArgMax` | combinational |
 | E. display | 0 | `SevenSegmentDisplay` | combinational + scan counter |
 
-Total **1,569 cycles = 15.69 µs** at 100 MHz.
+Total **1,606 cycles = 16.06 µs** at 100 MHz, measured from the first pixel
+write to the digit register.
 
 **Stage B is sequential dataflow and must stay that way.** A fully combinational
 form of the same equations would need 22 chained adder levels (~78 ns) and
-~418,000 LUTs — 26× over the device's 15,850. The 784-cycle sequential loop is
+~418,000 LUTs — 46× over the device's 9,112. The 784-cycle sequential loop is
 what makes the design exist at all; it is not an optimisation that could be
 traded away for latency.
 
@@ -336,7 +337,7 @@ Four ideas borrowed from Bonsai 27B / BitNet b1.58:
    saving is spent on the accumulator instead.
 
 3. **Sequential MAC engine.** A fully parallel 784×32 design needs ~50,000 LUTs
-   against 15,850 available. One engine iterating 784 cycles fits.
+   against 9,112 available. One engine iterating 784 cycles fits.
 
 4. **Selective precision.** W2 is 1.30% of weights, so it stays 16-bit. This is
    what lets a 32-unit ternary network reach 94%.
@@ -414,8 +415,9 @@ coverage is narrower than the end-to-end figure.
 
 - ModelSim Starter Edition 10.5b at `D:\intelFPGA\18.1\modelsim_ase\win32aloem\`
 - `tectonic` for the LaTeX report
-- **Synthesis has never been run** — Vivado and Quartus are not installed, so
-  all LUT, FF and power figures are analytical estimates.
+- **Synthesis has never been run** — no ISE 14.7 installation is available, so
+  all LUT, FF and power figures are analytical estimates. The build flow is
+  ready in `scripts/ise_build.tcl`.
 
 ---
 

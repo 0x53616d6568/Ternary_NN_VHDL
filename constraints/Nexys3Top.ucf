@@ -1,19 +1,38 @@
-NET "clk100" LOC = "V10" | IOSTANDARD = LVCMOS33;
-NET "clk100" TNM_NET = sys_clk_pin;
-TIMESPEC TS_sys_clk_pin = PERIOD sys_clk_pin 10 ns HIGH 50%;
+# Pin constraints for the Nexys 3 (Spartan-6 XC6SLX16-CSG324).
+#
+# Every net below is a port of rtl/Nexys3Top.vhd; nothing else is constrained.
+# Ports: clk100, RsRx (in) and seg<7:0>, an<3:0> (out).
+#
+# The pin locations were cross-checked against a second, independently written
+# Nexys 3 UCF for the same board: its 100 MHz clock, RS-232 pair and all twelve
+# seven-segment pins agree exactly with the values here. That is also what
+# settles the device question -- V10 / N17 / T17..P17 are Nexys 3 (Spartan-6)
+# pins, not Artix-7 ones.
+#
+# Free pins if the design later grows an echo or a reset (from that same UCF):
+#   RsTx N18, BTNR B8, LEDs U16 V16 U15 V15 M11 N11 R11 T11.
+#
+# ISE 14.7 only: UCF is not read by Vivado. See scripts/ise_build.tcl.
 
-NET "RsRx" LOC = "N17" | IOSTANDARD = LVCMOS33;
+NET "clk100" LOC = "V10" | IOSTANDARD = "LVCMOS33";
+NET "clk100" TNM_NET = "sys_clk_pin";
+TIMESPEC "TS_sys_clk_pin" = PERIOD "sys_clk_pin" 10 ns HIGH 50%;
 
-NET "seg<0>" LOC = "T17" | IOSTANDARD = LVCMOS33;
-NET "seg<1>" LOC = "T18" | IOSTANDARD = LVCMOS33;
-NET "seg<2>" LOC = "U17" | IOSTANDARD = LVCMOS33;
-NET "seg<3>" LOC = "U18" | IOSTANDARD = LVCMOS33;
-NET "seg<4>" LOC = "M14" | IOSTANDARD = LVCMOS33;
-NET "seg<5>" LOC = "N14" | IOSTANDARD = LVCMOS33;
-NET "seg<6>" LOC = "L14" | IOSTANDARD = LVCMOS33;
-NET "seg<7>" LOC = "M13" | IOSTANDARD = LVCMOS33;
+# RsRx is driven by the FT2232H. The pull-up keeps the line idle-high when the
+# USB cable is not attached, so an unpowered host cannot look like a start bit.
+NET "RsRx" LOC = "N17" | IOSTANDARD = "LVCMOS33" | PULLUP;
 
-NET "an<0>" LOC = "N16" | IOSTANDARD = LVCMOS33;
-NET "an<1>" LOC = "N15" | IOSTANDARD = LVCMOS33;
-NET "an<2>" LOC = "P18" | IOSTANDARD = LVCMOS33;
-NET "an<3>" LOC = "P17" | IOSTANDARD = LVCMOS33;
+NET "seg<0>" LOC = "T17" | IOSTANDARD = "LVCMOS33";
+NET "seg<1>" LOC = "T18" | IOSTANDARD = "LVCMOS33";
+NET "seg<2>" LOC = "U17" | IOSTANDARD = "LVCMOS33";
+NET "seg<3>" LOC = "U18" | IOSTANDARD = "LVCMOS33";
+NET "seg<4>" LOC = "M14" | IOSTANDARD = "LVCMOS33";
+NET "seg<5>" LOC = "N14" | IOSTANDARD = "LVCMOS33";
+NET "seg<6>" LOC = "L14" | IOSTANDARD = "LVCMOS33";
+# seg<7> is the decimal point, M13 on this board.
+NET "seg<7>" LOC = "M13" | IOSTANDARD = "LVCMOS33";
+
+NET "an<0>" LOC = "N16" | IOSTANDARD = "LVCMOS33";
+NET "an<1>" LOC = "N15" | IOSTANDARD = "LVCMOS33";
+NET "an<2>" LOC = "P18" | IOSTANDARD = "LVCMOS33";
+NET "an<3>" LOC = "P17" | IOSTANDARD = "LVCMOS33";

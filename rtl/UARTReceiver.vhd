@@ -28,6 +28,15 @@ architecture rtl of UARTReceiver is
   signal shift_reg  : std_logic_vector(7 downto 0) := (others => '0');
   signal data_reg   : std_logic_vector(7 downto 0) := (others => '0');
   signal valid_reg  : std_logic := '0';
+
+  -- serial_in is driven by the FT2232H and is asynchronous to clk. Sampling it
+  -- directly in the state machine risks a metastable value on the start-bit
+  -- edge, which would corrupt a frame at random. Two flops settle it; the
+  -- resulting two-cycle delay is negligible against a 868-cycle bit period.
+  -- Both default to '1' (line idle) so an unpowered or floating input cannot
+  -- be mistaken for a start bit at configuration time.
+  signal ser_meta : std_logic := '1';
+  signal ser_sync : std_logic := '1';
 begin
   data_out   <= data_reg;
   data_valid <= valid_reg;
@@ -35,18 +44,21 @@ begin
   process(clk)
   begin
     if rising_edge(clk) then
+      ser_meta <= serial_in;
+      ser_sync <= ser_meta;
+
       valid_reg <= '0';
 
       case state is
         when IDLE =>
-          if serial_in = '0' then
+          if ser_sync = '0' then
             timer <= CLKS_PER_BIT / 2;
             state <= START_BIT;
           end if;
 
         when START_BIT =>
           if timer = 0 then
-            if serial_in = '0' then
+            if ser_sync = '0' then
               timer <= CLKS_PER_BIT - 1;
               bit_index <= 0;
               state <= DATA_BITS;
@@ -59,7 +71,7 @@ begin
 
         when DATA_BITS =>
           if timer = 0 then
-            shift_reg(bit_index) <= serial_in;
+            shift_reg(bit_index) <= ser_sync;
             timer <= CLKS_PER_BIT - 1;
             if bit_index = 7 then
               state <= STOP_BIT;
@@ -72,7 +84,7 @@ begin
 
         when STOP_BIT =>
           if timer = 0 then
-            if serial_in = '1' then
+            if ser_sync = '1' then
               data_reg <= shift_reg;
               valid_reg <= '1';
             end if;

@@ -153,6 +153,14 @@ begin
     report "Display showed the expected digit : " & integer'image(display_ok)
            & " / " & integer'image(image_count) severity note;
 
+    -- The board-level contract: what a person looking at the board sees must be
+    -- the trained model's prediction. One wrong segment pattern is a failure.
+    assert display_ok = image_count
+      report "FAIL: " & integer'image(image_count - display_ok)
+             & " of " & integer'image(image_count)
+             & " images produced the wrong seven-segment pattern"
+      severity failure;
+
     file_close(vector_file);
     file_close(result_file);
     std.env.stop;

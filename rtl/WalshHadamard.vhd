@@ -8,19 +8,26 @@ use ieee.numeric_std.all;
 -- ternarising them, and applies the matching transform to the activations at
 -- run time. Here the transform is folded into a fixed permutation with fixed
 -- signs, so the only variable is the pixel itself and the whole thing collapses
--- to "add the pixel or its negation into 784 accumulators".
+-- to "add the pixel or its negation into BLOCK_SIZE accumulators".
 --
 --   y_b[i] = sum over k of H[i][k] * x[b * BLOCK_SIZE + k]        (Sylvester H)
 --
--- Every pixel therefore updates every accumulator with a single conditional
--- add or subtract. Accumulating all N_INPUTS outputs at once needs
--- N_INPUTS small adders rather than the N_INPUTS * BLOCK_SIZE that a combinational
--- transform would need, which is what keeps this inside the LUT budget.
+-- STORAGE. A pixel belongs to exactly one block, so only the BLOCK_SIZE
+-- accumulators of the current block are ever touched. An earlier version kept
+-- all 784 outputs as registers and indexed them with `block_base + i`, a
+-- variable index into a 784-entry register array. That is not a memory to the
+-- synthesiser: it becomes a 784-way write decoder plus a 784:1 read multiplexer
+-- on every lane, several thousand LUTs on a part with 9,112. Here the eight
+-- block accumulators are static indices, and a completed block is written into
+-- eight small lane banks. Each bank holds one output per block (98 deep), has a
+-- single write port and a single read port, and is therefore inferred as
+-- distributed RAM. The arithmetic is unchanged and still bit-exact: the same
+-- adds happen in the same order.
 --
 -- The trailing arithmetic shift restores the scale that the unnormalised
--- transform inflates by sqrt(BLOCK_SIZE). SHIFT = log2(BLOCK_SIZE) / 2. Because it is a
--- shift of an integer it is exact, and in hardware it costs nothing: the low
--- bits are simply not routed.
+-- transform inflates by sqrt(BLOCK_SIZE). SHIFT = log2(BLOCK_SIZE) / 2. Because
+-- it is a shift of an integer it is exact, and in hardware it costs nothing:
+-- the low bits are simply not routed.
 
 entity WalshHadamard is
   generic (
@@ -37,7 +44,12 @@ entity WalshHadamard is
     in_index  : in  std_logic_vector(9 downto 0);
     in_data   : in  std_logic;                     -- a single binary pixel
     out_valid : out std_logic;                     -- transform complete
-    out_data  : out std_logic_vector(N_INPUTS * OUT_WIDTH - 1 downto 0)
+
+    -- One output per cycle, in the same order the MAC engine consumes them.
+    -- The engine walks 0..N_INPUTS-1, so a simple address port is enough; the
+    -- old 3,136-bit parallel dump is what forced a 784:1 multiplexer.
+    rd_addr   : in  std_logic_vector(9 downto 0);
+    rd_data   : out std_logic_vector(OUT_WIDTH - 1 downto 0)
   );
 end WalshHadamard;
 
@@ -80,63 +92,83 @@ architecture rtl of WalshHadamard is
 
   constant H_SIGN : sign_table := build_signs;
 
-  type sum_array is array (0 to N_INPUTS - 1) of signed(SUM_WIDTH - 1 downto 0);
-  signal sums   : sum_array := (others => (others => '0'));
+  subtype sum_word is signed(SUM_WIDTH - 1 downto 0);
+  type acc_array is array (0 to BLOCK_SIZE - 1) of sum_word;
+
+  -- Lane bank: bank(i) holds outputs i, i + BLOCK_SIZE, i + 2*BLOCK_SIZE, ...
+  constant BANK_DEPTH : integer := N_INPUTS / BLOCK_SIZE;
+  type bank_t is array (0 to BANK_DEPTH - 1) of std_logic_vector(OUT_WIDTH - 1 downto 0);
+  type bank_set_t is array (0 to BLOCK_SIZE - 1) of bank_t;
+
+  signal acc    : acc_array := (others => (others => '0'));
+  signal bank   : bank_set_t;
   signal active : std_logic := '0';
   signal done   : std_logic := '0';
 
   signal pixel : std_logic_vector(1 downto 0) := "00";
   signal k_in_block : integer range 0 to BLOCK_SIZE - 1;
-  signal block_base : integer range 0 to N_INPUTS - 1;
+  signal block_index : integer range 0 to BANK_DEPTH - 1;
 begin
   -- Zero-extended, not sign-extended: the pixel lands in the least significant
--- bit so signed("01") = +1 and signed("00") = 0.
+  -- bit so signed("01") = +1 and signed("00") = 0.
   pixel <= (0 => in_data, others => '0');
 
-  -- k_in_block is the pixel index modulo the block size, and block_base is the
-  -- first accumulator belonging to the block that owns this pixel.
-  process(all)
+  -- Position of this pixel inside its block, and which block that is. Both are
+  -- combinational functions of the write address; BLOCK_SIZE is a power of two,
+  -- so these are bit slices after constant folding, not dividers.
+  -- Explicit sensitivity list rather than process(all): ISE 14.7's XST does not
+  -- accept the VHDL-2008 form, and this design has to synthesise on the
+  -- Spartan-6 toolchain. Behaviour is identical.
+  process(in_index)
   begin
-    k_in_block <= to_integer(unsigned(in_index)) mod BLOCK_SIZE;
-    block_base <= (to_integer(unsigned(in_index)) / BLOCK_SIZE) * BLOCK_SIZE;
+    k_in_block  <= to_integer(unsigned(in_index)) mod BLOCK_SIZE;
+    block_index <= to_integer(unsigned(in_index)) / BLOCK_SIZE;
   end process;
 
   process(clk)
-    variable contribution : signed(SUM_WIDTH - 1 downto 0);
+    variable contribution : sum_word;
+    variable updated      : sum_word;
   begin
     if rising_edge(clk) then
       done <= '0';
 
       if start = '1' then
-        for index in 0 to N_INPUTS - 1 loop
-          sums(index) <= (others => '0');
+        for index in 0 to BLOCK_SIZE - 1 loop
+          acc(index) <= (others => '0');
         end loop;
         active <= '1';
+      end if;
 
-        -- The first pixel arrives on the same cycle as start, because start is
-        -- derived from the write to address 0. Clearing and consuming it
-        -- together stops that pixel from being dropped; treating it as an
-        -- ordinary pixel would lose one of the 784 inputs.
-        if in_valid = '1' then
-          for i in 0 to BLOCK_SIZE - 1 loop
-            if H_SIGN(i, 0) = '0' then
-              sums(i) <= resize(signed(pixel), SUM_WIDTH);
-            else
-              sums(i) <= -resize(signed(pixel), SUM_WIDTH);
-            end if;
-          end loop;
-        end if;
-
-      elsif active = '1' and in_valid = '1' then
-        -- Only the block that owns this pixel is updated. Accumulating every
-        -- block on every pixel would mix the whole image into each output.
+      -- The first pixel arrives on the same cycle as start, because start is
+      -- derived from the write to address 0. Consuming it in the same branch
+      -- stops that pixel being dropped; treating it as an ordinary pixel of an
+      -- already-active transform would lose one of the 784 inputs.
+      if (start = '1' or active = '1') and in_valid = '1' then
         for i in 0 to BLOCK_SIZE - 1 loop
           if H_SIGN(i, k_in_block) = '0' then
             contribution := resize(signed(pixel), SUM_WIDTH);
           else
             contribution := -resize(signed(pixel), SUM_WIDTH);
           end if;
-          sums(block_base + i) <= sums(block_base + i) + contribution;
+
+          -- At k = 0 the block starts from this pixel alone, which is why the
+          -- accumulator is not cleared in a separate pass: a clear followed by
+          -- an add in the same cycle would need the old value anyway.
+          if k_in_block = 0 then
+            updated := contribution;
+          else
+            updated := acc(i) + contribution;
+          end if;
+          acc(i) <= updated;
+
+          -- Last pixel of the block: the sum is final, so scale it once and
+          -- commit it to its lane bank. Shifting here rather than on every
+          -- read is the same integer operation the old combinational output
+          -- stage performed.
+          if k_in_block = BLOCK_SIZE - 1 then
+            bank(i)(block_index) <=
+              std_logic_vector(resize(shift_right(updated, SHIFT), OUT_WIDTH));
+          end if;
         end loop;
 
         if to_integer(unsigned(in_index)) = N_INPUTS - 1 then
@@ -149,12 +181,24 @@ begin
 
   out_valid <= done;
 
-  process(all)
+  -- Read port. Lanes are interleaved, so output address a lives in bank
+  -- (a mod BLOCK_SIZE) at depth (a / BLOCK_SIZE). The bank select is a small
+  -- multiplexer over BLOCK_SIZE memories, not a 784-way register mux.
+  --
+  -- `bank` must be in the sensitivity list as well as `rd_addr`. Without it the
+  -- process only re-runs when the address changes, so a read of the address the
+  -- port already holds returns whatever was in the bank the last time the
+  -- address moved. The symptom is a single stale entry: address 0 is X on the
+  -- first image, because rd_addr is 0 from time zero and the bank is written
+  -- while the address never changes. Synthesis ignores sensitivity lists, so
+  -- the hardware is the same combinational read either way; this is purely a
+  -- simulation-correctness fix.
+  process(rd_addr, bank)
+    variable lane : integer range 0 to BLOCK_SIZE - 1;
+    variable depth : integer range 0 to BANK_DEPTH - 1;
   begin
-    for index in 0 to N_INPUTS - 1 loop
-      -- Arithmetic shift keeps the result exact; OUT_WIDTH must fit BLOCK_SIZE/2**SHIFT.
-      out_data((index + 1) * OUT_WIDTH - 1 downto index * OUT_WIDTH)
-        <= std_logic_vector(resize(shift_right(sums(index), SHIFT), OUT_WIDTH));
-    end loop;
+    lane  := to_integer(unsigned(rd_addr)) mod BLOCK_SIZE;
+    depth := to_integer(unsigned(rd_addr)) / BLOCK_SIZE;
+    rd_data <= bank(lane)(depth);
   end process;
 end rtl;

@@ -162,20 +162,18 @@ area, latency and energy. The dominant term in all three is the
 multiply--accumulate (MAC) unit. A conventional fully-connected layer with
 $n$ inputs and $m$ outputs requires $nm$ multipliers, each occupying on the
 order of a thousand LUTs on a 7-series FPGA. A $784 \rightarrow 256$ layer
-therefore cannot fit on the 15{,}850 LUTs available on a Nexys~3. The problem
+therefore cannot fit on the 9{,}112 LUTs available on a Nexys~3. The problem
 addressed by this work is: \emph{how to deploy a
 useful MNIST classifier on a device that cannot hold a single conventional
 hidden layer, without sacrificing the ability to verify the result.}
 
-The two candidate devices are worth stating precisely, because the report
-names one and the board is the other. The Digilent Nexys~3 carries a
-Spartan-6 XC6SLX16: 15{,}850 LUTs, 32 BRAM18 blocks (520\,Kib) and 32 DSP48E1
-slices. The Artix-7 XC7A100T has 63{,}400 LUTs, 135 BRAM36 blocks (4.86\,Mb)
-and 240 DSP48E1 slices. Every device budget in this report is quoted against
-the \emph{smaller} Spartan-6 part, which is the conservative choice and the
-one the shipped constraint file targets. Task~0 of the roadmap
-(Section~\ref{sec:roadmap}) resolves the naming question; nothing in the
-argument below depends on which way it is resolved.
+The target device is stated precisely, because every budget in this report is
+quoted against it. The Digilent Nexys~3 carries a Spartan-6 XC6SLX16-CSG324-2:
+9{,}112 six-input LUTs (14{,}579 logic cells), 18{,}224 flip-flops, 32 BRAM18
+blocks (576\,Kib) and 32 DSP48A1 slices. The Artix-7 XC7A100T is quoted only as
+a comparison point, at 63{,}400 LUTs, 135 BRAM36 blocks (4.86\,Mb) and 240
+DSP48E1 slices. The Spartan-6 part is the one the shipped constraint file
+targets and the tighter of the two, so it sets every rule the design obeys.
 
 \subsection{Proposed solution}
 \label{sec:solution}
@@ -188,7 +186,7 @@ narrow, and an \texttt{integer-exact} training mode ensures the RTL reproduces
 the PyTorch model bit-for-bit. The design is $784 \rightarrow 32 \rightarrow 10$,
 stores its weights in 3.5 KiB of information, 6.9 KiB of packed constants,
 performs zero multipliers in the first layer, and
-classifies in 15.7\,\textmu s of compute (17.8\,\textmu s including
+classifies in 16.1\,\textmu s of compute (18.2\,\textmu s including
 framing) at 100\,MHz, at 94.61\% MNIST accuracy.
 
 \subsection{Why ternary networks}
@@ -198,7 +196,7 @@ resources: silicon area, latency and energy. The dominant term in all three is
 usually the multiply--accumulate unit. A conventional layer of $n$ inputs and
 $m$ outputs requires $nm$ multipliers, each occupying on the order of a thousand
 LUTs on a 7-series FPGA. A $784 \rightarrow 256$ layer therefore does not fit
-on the 15{,}850 LUTs available on a Nexys~3.
+on the 9{,}112 LUTs available on a Nexys~3.
 
 \begin{table}[H]
 \centering
@@ -382,8 +380,8 @@ In each case the model is small, the input rate is low, and the energy per
 inference is the product specification. A multiplier-free integer datapath is
 not a compromise there; it is the only way to hit the budget.
 
-This project is a worked example at exactly that scale: 15{,}850 LUTs, no DSP
-slice in the first layer, 6.9 KiB of packed weight constants, 15.7\,\textmu s per image and a
+This project is a worked example at exactly that scale: 9{,}112 LUTs, no DSP
+slice in the first layer, 6.9 KiB of packed weight constants, 16\,\textmu s per image and a
 datapath that is bit-exact against its training model. The number that matters
 for a product is not the 94.61\% alone but the combination of accuracy, area and
 energy that a ternary layer makes possible.
@@ -725,17 +723,17 @@ absolute error zero.
 
 The central design decision was to abandon a fully parallel first layer. A
 parallel $784 \times 16$ design needs approximately 25{,}000 LUTs against the
-15{,}850 available on the device; it does not fit, at any optimisation effort.
+9{,}112 available on the device; it does not fit, at any optimisation effort.
 Replacing it with a single sequential MAC engine that walks the 784 inputs costs
 one multiplier-equivalent (none, being ternary) and 784 cycles, and fits
 comfortably.
 
 The cost of this decision is latency, and it is smaller than the MAC count
 suggests: the 32 units run in parallel, so the 25{,}408 MACs of an image take
-784 cycles, not 25{,}408. Measured end-to-end, including the rotation, the
-classifier takes 1{,}569 cycles --- 15.7\,\textmu s at 100\,MHz. For a
-human-facing digit recogniser this is entirely irrelevant, and the area saving
-is what makes the design exist at all.
+784 cycles, not 25{,}408. Measured end-to-end, including the rotation and the
+serialised output layer, the classifier takes 1{,}605 cycles --- 16.1\,\textmu s
+at 100\,MHz. For a human-facing digit recogniser this is entirely irrelevant,
+and the area saving is what makes the design exist at all.
 
 \subsection{Integer-exact derivation}
 
@@ -823,27 +821,30 @@ variants.
 \node[draw,fill=green!18,minimum width=24mm,minimum height=13mm,align=center,right=of rot] (mac) {\texttt{TernaryMac}\\\texttt{Engine}\\[-1mm]$\mathbf{0}$ multipliers};
 \node[draw,fill=green!8,minimum width=17mm,minimum height=12mm,align=center,below=of rot] (w1) {$W_1$\\2 bit\\BRAM};
 \node[draw,fill=orange!14,minimum width=16mm,minimum height=12mm,align=center,right=of mac] (hid) {$H{=}32$\\hidden};
-\node[draw,fill=orange!8,minimum width=18mm,minimum height=12mm,align=center,right=of hid] (w2) {$W_2$ 16 bit\\320 weights};
-\node[draw,fill=purple!10,minimum width=17mm,minimum height=12mm,align=center,right=of w2] (am) {\texttt{ArgMax}\\10 classes\\4 bit index};
-\node[draw,fill=gray!8,minimum width=17mm,minimum height=12mm,align=center,below=of mac] (lat) {784 cycles\\15.7\,\textmu s};
+\node[draw,fill=orange!10,minimum width=21mm,minimum height=12mm,align=center,right=of hid] (dl) {\texttt{DenseLayer}\\10 multipliers\\32 cycles};
+\node[draw,fill=orange!8,minimum width=18mm,minimum height=12mm,align=center,below=of dl] (w2) {$W_2$ 16 bit\\320 weights};
+\node[draw,fill=purple!10,minimum width=17mm,minimum height=12mm,align=center,right=of dl] (am) {\texttt{ArgMax}\\10 classes\\4 bit index};
+\node[draw,fill=gray!8,minimum width=17mm,minimum height=12mm,align=center,below=of mac] (lat) {784 cycles\\16.1\,\textmu s};
 
 \draw[-{Stealth[length=1.8mm]},thick] (px)--(rot);
 \draw[-{Stealth[length=1.8mm]},thick] (rot)--(mac);
 \draw[-{Stealth[length=1.8mm]},thick] (mac)--(hid);
-\draw[-{Stealth[length=1.8mm]},thick] (hid)--(w2);
-\draw[-{Stealth[length=1.8mm]},thick] (w2)--(am);
+\draw[-{Stealth[length=1.8mm]},thick] (hid)--(dl);
+\draw[-{Stealth[length=1.8mm]},thick] (dl)--(am);
 \draw[-{Stealth[length=1.8mm]},dashed] (w1)--(mac);
+\draw[-{Stealth[length=1.8mm]},dashed] (w2)--(dl);
 \draw[-{Stealth[length=1.8mm]},dashed] (lat)--(mac);
 \end{tikzpicture}
-\caption{Complete inference datapath. Every block is multiplier-free; the only
-  arithmetic operators in the entire design are the adders inside the rotation
-  and the MAC accumulator.}
+\caption{Complete inference datapath. The rotation and the first layer are
+  multiplier-free; the only multipliers in the design are the ten in the output
+  layer, which is walked over 32 cycles.}
 \label{fig:datapath}
 \end{figure}
 
 Figure~\ref{fig:datapath} shows the full path from the serial pixel stream to
 the four-bit class index. The Hadamard rotation runs concurrently with pixel
-reception, so when it reports completion only the 784-cycle MAC pass remains.
+reception, so when it reports completion only the 784-cycle MAC pass and the
+32-cycle output layer remain.
 
 \subsection{Weight memory organisation}
 
@@ -854,29 +855,40 @@ access into a sequential one --- a large BRAM efficiency win. The packed matrix
 is 50{,}176 bits, organised as 784 words of 64 bits. The address bus is
 therefore 10 bits wide: it is indexed by the input, not by the weight.
 
+The read is registered, and that costs exactly one cycle of address latency:
+the word for address $a$ appears on the cycle after $a$ is presented. The MAC
+engine hides the cost by priming address~0 before the first real input, so the
+pass is 786 cycles rather than 784 and no arithmetic changes. The trade is
+deliberate --- a combinational read of a 50{,}176-bit constant cannot be block
+RAM, because block RAM has a synchronous read, so the registered form is what
+makes the two-BRAM weight store possible at all.
+
 \subsection{Resource usage}
 
 \begin{table}[H]
 \centering
 \small
-\caption{Resource accounting. Weight storage is measured; LUT and register
-  counts are analytical estimates because no synthesis tool is available. The
-  device line is the Spartan-6 budget of the Nexys~3, the smaller of the two
-  candidate parts; the XC7A100T has 63{,}400 LUTs and 135 BRAM36.}
+\caption{Resource accounting for the memory-mapped datapath. Weight storage is
+  measured from the packed constants; LUT, register and DSP counts are
+  analytical, derived from the RTL structure (adder widths, bank depths, port
+  widths), because no synthesis run is available. The device line is the
+  Spartan-6 XC6SLX16 budget of the Nexys~3.}
 \label{tab:resources}
 \begin{tabularx}{\linewidth}{@{}lY Y Y@{}}
 \toprule
 \textbf{Resource} & \textbf{$H{=}16$} & \textbf{$H{=}32$} & \textbf{Basis} \\
 \midrule
-BRAM36 (weights)    & \good 0.8 & \good 1.5 & measured \\
-BRAM36 (rotation)   & 1 & 1 & estimated \\
-LUTs (MAC engine)   & \est 900 & \est 1{,}200 & estimated \\
-LUTs (rotation)     & \est 400 & \est 400 & estimated \\
-LUTs (control/UI)   & \est 400 & \est 400 & estimated \\
-LUTs (output layer) & \est 350 & \est 350 & estimated \\
-FFs                 & \est 700 & \est 1{,}100 & estimated \\
+BRAM36 (weights)    & \good 1 & \good 2 & 25{,}088 / 50{,}176 bits, registered read \\
+BRAM36 (rotation)   & \good 0 & \good 0 & distributed RAM, 8 banks of $98\times4$ \\
+LUTs (MAC engine)   & \est 700 & \est 1{,}350 & 32 $\times$ (ternary apply $+$ 32-bit add) \\
+LUTs (rotation)     & \est 150 & \est 150 & 8 lane banks, adders, bank select \\
+LUTs (output layer) & \est 450 & \est 450 & 10 multipliers and 10 accumulators \\
+LUTs (control, UART, display) & \est 300 & \est 300 & sequencer, receiver, scan \\
+LUTs (ArgMax)       & \est 250 & \est 250 & 10-way 32-bit compare \\
+DSP48A1             & 10 & 10 & output layer only \\
+FFs                 & \est 1{,}000 & \est 1{,}600 & accumulators, banks, pipeline \\
 \midrule
-Device total        & 15{,}850 LUTs & 15{,}850 LUTs & XC6SLX16 \\
+Device total        & 9{,}112 LUTs & 9{,}112 LUTs & XC6SLX16 \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -891,17 +903,20 @@ with the input count, not with the multiply count:
 \centering
 \small
 \caption{Inference latency. The float figure is analytical, at one MAC per
-  cycle; the ternary row is measured in co-simulation, including the rotation
-  pipeline.}
+  cycle; the ternary figure is measured in co-simulation from the first pixel
+  write to the digit register, including the rotation, the two cycles that prime
+  the registered weight read, and the serialised output layer.}
 \begin{tabularx}{\linewidth}{@{}Lrr@{}}
 \toprule
  & \textbf{Ternary} & \textbf{Float} \\
 \midrule
 MAC operations        & 25{,}408 & 203{,}264 \\
-MAC cycles            & 784 & 203{,}264 \\
-End-to-end compute    & 15.7\,\textmu s (measured) & 2.033 ms (analytical) \\
-With UART framing     & 17.8\,\textmu s & --- \\
-Throughput at 100 MHz & 56{,}000 img/s & 492 img/s \\
+Rotation cycles       & 784 & --- \\
+MAC cycles            & 786 & 203{,}264 \\
+Output-layer cycles   & 32 & --- \\
+End-to-end compute    & 16.06\,\textmu s (measured) & 2.033 ms (analytical) \\
+With UART framing     & 18.2\,\textmu s & --- \\
+Throughput at 100 MHz & 55{,}000 img/s & 492 img/s \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -951,12 +966,12 @@ Section~\ref{sec:hardware} and the RTL is one-to-one:
 \textbf{File} & \textbf{Unit} & \textbf{Lines} & \textbf{Role} \\
 \midrule
 \texttt{Nexys3Top.vhd}          & entity          &  82 & board wrapper, top level \\
-\texttt{UARTReceiver.vhd}       & entity          &  78 & serial byte receiver \\
+\texttt{UARTReceiver.vhd}       & entity          &  88 & serial byte receiver \\
 \texttt{ImagePacketReceiver.vhd}& entity          &  79 & framing to pixel writes \\
 \texttt{SevenSegmentDisplay.vhd}& entity          &  51 & anode scan and segment decode \\
-\texttt{NumberRecognition.vhd}  & entity          & 227 & classifier datapath, top of RTL \\
-\texttt{WalshHadamard.vhd}      & entity          & 144 & block-8 rotation \\
-\texttt{TernaryMacEngine.vhd}   & entity          & 105 & MAC sequencer, no arithmetic \\
+\texttt{NumberRecognition.vhd}  & entity          & 258 & classifier datapath, top of RTL \\
+\texttt{WalshHadamard.vhd}      & entity          & 184 & block-8 rotation, lane-banked \\
+\texttt{TernaryMacEngine.vhd}   & entity          & 133 & MAC sequencer, no arithmetic \\
 \texttt{NeuronLayer.vhd}        & entity          &  59 & array of 32 \texttt{TernaryNeuron} \\
 \texttt{TernaryNeuron.vhd}      & entity          &  94 & one hidden unit \\
 \texttt{TernaryApply.vhd}       & entity          &  57 & multiplier-free ternary product \\
@@ -964,22 +979,22 @@ Section~\ref{sec:hardware} and the RTL is one-to-one:
 \texttt{Saturate.vhd}           & entity          &  69 & ReLU plus saturation to $[0,127]$ \\
 \texttt{ReLU.vhd}               & entity          &  19 & sign-bit mask only \\
 \texttt{Adder.vhd}              & entity          &  28 & explicit ripple-carry adder \\
-\texttt{DenseLayer.vhd}         & entity          &  66 & combinational output layer \\
+\texttt{DenseLayer.vhd}         & entity          & 109 & sequential output layer, 10 multipliers \\
 \texttt{ArgMax.vhd}             & entity          &  36 & ten scores to four bits \\
 \texttt{ModelWeights.vhd}       & package         &1015 & generated constant arrays \\
 \midrule
-\texttt{tb\_NumberRecognition.vhd}    & testbench & 110 & end-to-end, 2{,}000 images \\
-\texttt{tb\_WalshHadamard.vhd}        & testbench & 101 & rotation vs Python \\
-\texttt{tb\_TernaryMacEngine.vhd}     & testbench & 155 & MAC vs Python \\
-\texttt{tb\_Nexys3Top.vhd}            & testbench & 143 & board level over real framing \\
+\texttt{tb\_NumberRecognition.vhd}    & testbench & 117 & end-to-end, 2{,}000 images \\
+\texttt{tb\_WalshHadamard.vhd}        & testbench & 106 & rotation vs Python \\
+\texttt{tb\_TernaryMacEngine.vhd}     & testbench & 169 & MAC vs Python \\
+\texttt{tb\_Nexys3Top.vhd}            & testbench & 150 & board level over real framing \\
 \texttt{tb\_UARTReceiver.vhd}          & testbench & 111 & all 256 byte values \\
 \texttt{tb\_SevenSegmentDisplay.vhd}  & testbench & 101 & all ten digit codes \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-In total the design is 2{,}286 lines of RTL --- of which 1{,}015 are the
-generated weight package --- and 721 lines of testbench.
+In total the design is 2{,}438 lines of RTL --- of which 1{,}015 are the
+generated weight package --- and 754 lines of testbench.
 
 \subsection{Hierarchy: components and subcomponents}
 \label{sec:hierarchy}
@@ -1075,7 +1090,7 @@ comparators. Nothing else is instantiated.
 \texttt{Nexys3Top}          & \texttt{SevenSegmentDisplay}  & 1  & digit display \\
 \texttt{NumberRecognition}  & \texttt{WalshHadamard}        & 1  & block-8 rotation of the pixel bus \\
 \texttt{NumberRecognition}  & \texttt{TernaryMacEngine}     & 1  & first-layer MAC pass \\
-\texttt{NumberRecognition}  & \texttt{DenseLayer}           & 1  & second layer, combinational \\
+\texttt{NumberRecognition}  & \texttt{DenseLayer}           & 1  & second layer, 32 cycles \\
 \texttt{NumberRecognition}  & \texttt{ArgMax}               & 1  & class selection \\
 \texttt{TernaryMacEngine}   & \texttt{NeuronLayer}          & 1  & array of hidden units \\
 \texttt{NeuronLayer}        & \texttt{TernaryNeuron}        & 32 & one per hidden unit \\
@@ -1405,24 +1420,29 @@ one \texttt{DenseLayer} and one \texttt{ArgMax}.
 \end{figure}
 
 The FSM is deliberately minimal. The rotation runs concurrently with pixel
-reception, so when it reports completion only the MAC pass remains:
+reception, so when it reports completion only the MAC pass and the serialised
+output layer remain:
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[font=\small,>=Stealth,
-  st/.style={draw,rounded corners,align=center,minimum width=28mm,
+  st/.style={draw,rounded corners,align=center,minimum width=30mm,
              minimum height=9mm,font=\small}]
-  \node[st,fill=blue!8]   (idle) at (0,0)      {\texttt{IDLE}};
-  \node[st,fill=green!14] (mac)  at (4.6,0)    {\texttt{MAC\_RUN}};
-  \node[st,fill=purple!10](done) at (9.2,0)    {\texttt{DONE}};
+  \node[st,fill=blue!8]    (idle)  at (0,0)      {\texttt{IDLE}};
+  \node[st,fill=green!14]  (mac)   at (5.0,0)    {\texttt{MAC\_RUN}};
+  \node[st,fill=orange!12] (dense) at (5.0,-2.6) {\texttt{DENSE\_RUN}};
+  \node[st,fill=purple!10] (done)  at (0,-2.6)   {\texttt{DONE}};
   \draw[sig,thick] (idle) -- node[above,font=\scriptsize] {\texttt{rot\_done}} (mac);
-  \draw[sig,thick] (mac) -- node[above,font=\scriptsize] {\texttt{mac\_done}} (done);
-  \draw[sig,thick] (done.south) -- ++(0,-0.8) -| node[pos=0.25,below,font=\scriptsize] {next image} (idle.south);
+  \draw[sig,thick] (mac) -- node[right,font=\scriptsize] {\texttt{mac\_done}} (dense);
+  \draw[sig,thick] (dense) -- node[below,font=\scriptsize] {\texttt{dense\_done}} (done);
+  \draw[sig,thick] (done) -- node[left,font=\scriptsize] {next image} (idle);
 \end{tikzpicture}
 \caption{Control finite state machine. A write to pixel address 0 asserts
   \texttt{rot\_start}; \texttt{rot\_done} strobes \texttt{mac\_start}; the MAC
-  engine asserts \texttt{done} after 784 cycles, at which point
-  \texttt{DenseLayer} and \texttt{ArgMax} are combinational and already settled.}
+  engine asserts \texttt{done} after 786 cycles (784 inputs plus two to prime
+  the registered weight read), which strobes \texttt{dense\_start}; the output
+  layer takes 32 further cycles, and its \texttt{done} leaves the combinational
+  ArgMax result settled in \texttt{scores}.}
 \label{fig:fsm}
 \end{figure}
 
@@ -1430,10 +1450,10 @@ reception, so when it reports completion only the MAC pass remains:
 \label{sub:walsh}
 
 A streaming Walsh--Hadamard transform of the pixel bus. It consumes one pixel per
-cycle, accumulates 64 signed sums for the eight-pixel blocks, and emits the
-rotated bus with \texttt{out\_valid}. The generics are \texttt{N\_INPUTS}
-(784), \texttt{BLOCK\_SIZE} (8), \texttt{SHIFT} (1), \texttt{SUM\_WIDTH} (6)
-and \texttt{OUT\_WIDTH} (4).
+cycle, accumulates eight signed sums for the eight-pixel block in flight, and
+writes each completed block into eight lane banks. The generics are
+\texttt{N\_INPUTS} (784), \texttt{BLOCK\_SIZE} (8), \texttt{SHIFT} (1),
+\texttt{SUM\_WIDTH} (6) and \texttt{OUT\_WIDTH} (4).
 
 \begin{center}
 \small
@@ -1447,7 +1467,8 @@ and \texttt{OUT\_WIDTH} (4).
 \texttt{in\_index} & 10 & pixel index (0--783) \\
 \texttt{in\_data}  & 1  & binary pixel value \\
 \texttt{out\_valid}& 1  & transform complete \\
-\texttt{out\_data} & 784$\times$4 & rotated bus (4 bits per pixel) \\
+\texttt{rd\_addr}  & 10 & rotated-value read address \\
+\texttt{rd\_data}  & 4  & rotated value for that address \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -1455,21 +1476,23 @@ and \texttt{OUT\_WIDTH} (4).
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}
-  \node[chip,fill=blue!10,minimum width=46mm,minimum height=52mm] (b) at (0,0)
+  \node[chip,fill=blue!10,minimum width=46mm,minimum height=66mm] (b) at (0,0)
     {\texttt{WalshHadamard}\\[1mm]{\tiny block-8, shift 1}};
-  \foreach \nm/\pw/\y [count=\i] in {clk/1/2.1, start/1/1.05, in\_valid/1/0.0,
-                                     in\_index/10/-1.05, in\_data/1/-2.1} {
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/2.6, start/1/1.55, in\_valid/1/0.5,
+                                     in\_index/10/-0.55, in\_data/1/-1.6,
+                                     rd\_addr/10/-2.65} {
     \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
     \draw[sig] (i\i.east) -- (i\i.east -| b.west);
   }
-  \foreach \nm/\pw/\y [count=\i] in {out\_valid/1/0.6, out\_data/3136/0.0} {
+  \foreach \nm/\pw/\y [count=\i] in {out\_valid/1/0.55, rd\_data/4/-0.55} {
     \node[pout] (o\i) at (6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
     \draw[sig] (b.east |- o\i.west) -- (o\i.west);
   }
-  \node[font=\tiny,gray!70,align=center] at (2.9,-2.1) {$784\times4$};
+  \node[font=\tiny,gray!70,align=center] at (0,-2.6) {8 lane banks\\$98\times4$};
 \end{tikzpicture}
-\caption{\texttt{WalshHadamard}: five inputs, two outputs. The output is a
-  3{,}136-bit bus, not a scalar.}
+\caption{\texttt{WalshHadamard}: six inputs, two outputs. The result is a
+  memory, not a bus: the MAC engine fetches one rotated value per cycle by
+  address, so no 3{,}136-bit vector has to be sliced with a variable index.}
 \label{fig:walsh}
 \end{figure}
 
@@ -1512,7 +1535,7 @@ Figure~\ref{fig:butterfly} shows one block-8 butterfly.
   \node[font=\tiny,align=center] at (0,1.0)  {stage 1: pair sums and differences};
   \node[font=\tiny,align=center] at (0,-1.55) {stage 2: cross-pair sums};
   \node[font=\tiny,align=center,text width=42mm] at (0,-6.3)
-    {signed sums held in 6 bits, shifted right by one into the 4-bit bus};
+    {signed sums held in 6 bits, shifted right by one into the 4-bit lane banks};
 \end{tikzpicture}
 \caption{Block-8 Hadamard butterfly. Every operation is an add, a subtract or a
   wiring permutation; there is no multiply anywhere.}
@@ -1531,11 +1554,26 @@ enough to be synthesized and tested in isolation.
 
 The component that justifies the whole design. A fully parallel first layer at
 $784 \times 32$ would need 25{,}088 accumulators and roughly 50{,}000 LUTs,
-against 15{,}850 available. Streaming one input per cycle instead needs one
+against 9{,}112 available. Streaming one input per cycle instead needs one
 accumulator register file of $N_{\text{hidden}}$ entries.
 
 \textbf{Contains.} One \texttt{NeuronLayer}; the engine itself is a 10-bit input
 pointer, a start/done handshake and the final-cycle strobe, with no arithmetic.
+
+\textbf{Two memory contracts.} Both operands arrive from memories rather than
+from wide buses, and the two contracts differ deliberately:
+
+\begin{itemize}[leftmargin=*]
+  \item the weight word is \emph{synchronous} --- the word for address $a$ is
+        valid on the cycle after $a$ is presented. That is what allows the
+        50{,}176-bit table to be block RAM instead of a 784:1 multiplexer built
+        from LUTs. The engine therefore spends one cycle priming address~0, and
+        feeds a zero activation during that cycle so the bias loaded on
+        \texttt{start} survives untouched.
+  \item the activation is \emph{asynchronous} --- \texttt{x\_value} is valid in
+        the same cycle as \texttt{x\_addr}. The rotation's lane banks are
+        distributed RAM, so a same-cycle read is both possible and free.
+\end{itemize}
 
 \begin{center}
 \small
@@ -1543,14 +1581,15 @@ pointer, a start/done handshake and the final-cycle strobe, with no arithmetic.
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
-\texttt{clk}         & 1  & system clock \\
-\texttt{start}       & 1  & begin MAC pass \\
-\texttt{busy}        & 1  & MAC in progress \\
-\texttt{done}        & 1  & MAC complete strobe \\
+\texttt{clk}          & 1  & system clock \\
+\texttt{start}        & 1  & begin MAC pass \\
+\texttt{busy}         & 1  & MAC in progress \\
+\texttt{done}         & 1  & MAC complete strobe (after 786 cycles) \\
 \texttt{w\_read\_addr}& 10 & weight address (input index) \\
-\texttt{w\_read\_data}& 64 & packed weight word (32 units $\times$ 2 bits) \\
-\texttt{x}           & 784$\times$4 & rotated input bus \\
-\texttt{hidden}      & 32$\times$8 & hidden activations \\
+\texttt{w\_read\_data}& 64 & packed weight word (32 units $\times$ 2 bits), synchronous \\
+\texttt{x\_addr}      & 10 & rotated-value address \\
+\texttt{x\_value}     & 4  & rotated value, same cycle \\
+\texttt{hidden}       & 32$\times$8 & hidden activations \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -1558,21 +1597,23 @@ pointer, a start/done handshake and the final-cycle strobe, with no arithmetic.
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}
-  \node[chip,fill=green!14,minimum width=48mm,minimum height=46mm] (b) at (0,0)
+  \node[chip,fill=green!14,minimum width=48mm,minimum height=56mm] (b) at (0,0)
     {\texttt{TernaryMacEngine}\\[1mm]{\tiny sequencer + NeuronLayer}\\[-0.4mm]{\tiny no arithmetic}};
-  \foreach \nm/\pw/\y [count=\i] in {clk/1/1.65, start/1/0.55,
-                                     x/3136/-0.55, w\_read\_data/64/-1.65} {
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/2.15, start/1/1.05,
+                                     w\_read\_data/64/-0.05, x\_value/4/-1.15} {
     \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
     \draw[sig] (i\i.east) -- (i\i.east -| b.west);
   }
-  \foreach \nm/\pw/\y [count=\i] in {busy/1/1.65, done/1/0.55,
-                                     w\_read\_addr/10/-0.55, hidden/256/-1.65} {
+  \foreach \nm/\pw/\y [count=\i] in {busy/1/2.15, done/1/1.05,
+                                     w\_read\_addr/10/-0.05, x\_addr/10/-1.15,
+                                     hidden/256/-2.25} {
     \node[pout] (o\i) at (6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
     \draw[sig] (b.east |- o\i.west) -- (o\i.west);
   }
 \end{tikzpicture}
 \caption{\texttt{TernaryMacEngine}: the address generator walks the inputs and
-  the arithmetic lives one level down in \texttt{NeuronLayer}.}
+  the arithmetic lives one level down in \texttt{NeuronLayer}. The weight port
+  is a registered memory interface; the activation port is a plain address.}
 \label{fig:mac}
 \end{figure}
 
@@ -1892,18 +1933,23 @@ multiplexer.
 %% ----------------------------------------------------------------------------
 \subsection{Output layer and class selection}
 
-\subsubsection{\texttt{DenseLayer.vhd} --- combinational output layer}
+\subsubsection{\texttt{DenseLayer.vhd} --- sequential output layer}
 \label{sub:denselayer}
 
-A generic combinational dense layer, parameterised on \texttt{N\_INPUTS},
+A generic dense layer, parameterised on \texttt{N\_INPUTS},
 \texttt{N\_OUTPUTS}, \texttt{DATA\_WIDTH}, \texttt{WEIGHT\_WIDTH},
 \texttt{ACC\_WIDTH}, \texttt{OUTPUT\_WIDTH} and a \texttt{USE\_RELU} flag. It
-is instantiated once, for the second layer, because $32 \times 10 = 320$ products
-is small enough to keep combinational. It contains real multipliers, which is
-acceptable because the second layer accounts for 1.26\% of the weights.
+is instantiated once, for the second layer. It contains real multipliers, which
+is acceptable because the second layer accounts for 1.26\% of the weights ---
+but not 320 of them at once: the layer walks its inputs one per cycle with
+$N_{\text{outputs}} = 10$ multipliers, which maps onto ten of the device's
+32 DSP48A1 slices. Built combinationally, 320 multipliers would need either ten
+times the DSPs the part has or tens of thousands of LUTs.
 
-\textbf{Contains.} 320 multiply--accumulate products in a single combinational
-process; no sub-entities.
+\textbf{Contains.} Ten parallel multiply--accumulate lanes walked over
+$N_{\text{inputs}}$ cycles; no sub-entities. The accumulation order is the same
+increasing-index sequence as the combinational version, so the integer result is
+identical.
 
 \begin{center}
 \small
@@ -1911,6 +1957,9 @@ process; no sub-entities.
 \toprule
 \textbf{Port} & \textbf{Width} & \textbf{Description} \\
 \midrule
+\texttt{clk}     & 1  & system clock \\
+\texttt{start}   & 1  & load the biases and begin \\
+\texttt{done}    & 1  & results valid (after $N_{\text{inputs}}{+}1$ cycles) \\
 \texttt{A}       & \texttt{N\_INPUTS}$\times$\texttt{DATA\_WIDTH} & input vector (32$\times$8) \\
 \texttt{Weights} & \texttt{N\_INPUTS}$\times$\texttt{N\_OUTPUTS}$\times$\texttt{WEIGHT\_WIDTH} & weight matrix (32$\times$10$\times$16) \\
 \texttt{Biases}  & \texttt{N\_OUTPUTS}$\times$\texttt{ACC\_WIDTH} & bias vector (10$\times$32) \\
@@ -1922,17 +1971,21 @@ process; no sub-entities.
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}
-  \node[chip,fill=orange!10,minimum width=48mm,minimum height=38mm] (b) at (0,0)
+  \node[chip,fill=orange!10,minimum width=48mm,minimum height=58mm] (b) at (0,0)
     {\texttt{DenseLayer}\\[1mm]{\tiny $32\times10$, 16-bit weights}};
-  \foreach \nm/\pw/\y [count=\i] in {A/256/1.1, Weights/5120/0.0, Biases/320/-1.1} {
+  \foreach \nm/\pw/\y [count=\i] in {clk/1/2.2, start/1/1.1, A/256/0.0,
+                                     Weights/5120/-1.1, Biases/320/-2.2} {
     \node[pin] (i\i) at (-6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
     \draw[sig] (i\i.east) -- (i\i.east -| b.west);
   }
-  \node[pout] (o1) at (6.0,0) {\texttt{Y}\\[-0.6mm]{\tiny 320 bit}};
-  \draw[sig] (b.east |- o1.west) -- (o1.west);
+  \foreach \nm/\pw/\y [count=\i] in {done/1/1.1, Y/320/-1.1} {
+    \node[pout] (o\i) at (6.0,\y) {\texttt{\nm}\\[-0.6mm]{\tiny \pw\ bit}};
+    \draw[sig] (b.east |- o\i.west) -- (o\i.west);
+  }
 \end{tikzpicture}
 \caption{\texttt{DenseLayer}: the only block in the classifier that contains a
-  multiplier. It is combinational and accounts for 1.26\% of the weights.}
+  multiplier. It is sequential --- ten multipliers, 32 cycles --- and accounts
+  for 1.26\% of the weights.}
 \label{fig:denselayer}
 \end{figure}
 
@@ -2171,7 +2224,7 @@ Relative                & 1.00      & 0.0625    & 0.1250 \\
 Multipliers             & 203{,}530 & \good 0    & \good 0 \\
 Adders                  & 203{,}530 & 12{,}704   & 25{,}408 \\
 MAC cycles              & 203{,}264 & \good 784 & \good 784 \\
-Latency at 100 MHz      & 2.033 ms (est.) & 15.7\,\textmu s & 15.7\,\textmu s (meas.) \\
+Latency at 100 MHz      & 2.033 ms (est.) & 15.9\,\textmu s (est.) & 16.06\,\textmu s (meas.) \\
 \midrule
 \multicolumn{4}{@{}l}{\textit{Space complexity}} \\
 Parameters              & 203{,}530 & 12{,}730 & 25{,}450 \\
@@ -2194,8 +2247,8 @@ The asymmetry is the point of the report. In \emph{space} the ternary design win
 by two orders of magnitude: 115$\times$ fewer bytes stored and 228$\times$ less
 weight information, because 30 bits per weight are eliminated and 98.7\% of the
 weights become ternary. In \emph{time} it wins because 32 products are formed
-in a single cycle: 259$\times$ fewer cycles and 129$\times$ less end-to-end
-latency, with no multiplier in the datapath at all. In \emph{accuracy} it loses
+in a single cycle: 259$\times$ fewer cycles and 127$\times$ less end-to-end
+latency, with no multiplier in the ternary layer. In \emph{accuracy} it loses
 by 3.4 points.
 
 \subsection{Energy}
@@ -2470,35 +2523,35 @@ an exit criterion, so progress is checkable rather than a matter of opinion.
 \toprule
 \textbf{\#} & \textbf{Task} & \textbf{Work} & \textbf{Artefact / exit criterion} \\
 \midrule
-0 & Resolve the device & The board is a Nexys 3 (Spartan-6 XC6SLX16), but the
-  repository also carries a Vivado flow aimed at an Artix-7 XC7A100T while the
-  shipped constraint file uses Spartan-6 pins. Choose one board and one part,
-  and make the README, report and constraints agree.
-  & One part number, one constraint format, documented \\
-1 & Constraints & For the Artix-7 path, translate the pin map to XDC: 100\,MHz
-  clock, \texttt{RsRx}, seven segment, anodes. For the Spartan-6 path, keep the
-  UCF and use ISE.
-  & \texttt{report\_clocks} shows one 10\,ns clock; no unconstrained I/O \\
-2 & Elaboration and synthesis & \texttt{synth\_design} with
-  \texttt{Nexys3Top} as top. Check that every entity in
-  Table~\ref{tab:instances} is present in the elaborated hierarchy.
+0 & Device and toolchain (closed) & The board is a Nexys~3, part
+  XC6SLX16-CSG324-2. The Vivado flow aimed at an Artix-7 XC7A100T has been
+  removed; \texttt{scripts/ise\_build.tcl} now builds \texttt{Nexys3Top}
+  against \texttt{constraints/Nexys3Top.ucf}, and the pin map was checked line
+  by line against a Nexys~3 design that ships a working bitstream.
+  & One part, one flow, one constraint file: done \\
+1 & Constraints & The UCF pins the 100\,MHz clock, \texttt{RsRx}, the seven
+  segment cathodes, the anodes and \texttt{dp}. What remains is confirming it
+  with the tool: one clock, no unconstrained I/O, no duplicate pins.
+  & \texttt{padreport} shows every port placed; no unconstrained I/O \\
+2 & Elaboration and synthesis & \texttt{xst} with \texttt{Nexys3Top} as top.
+  Check that every entity in Table~\ref{tab:instances} is present in the
+  elaborated hierarchy.
   & Zero errors; hierarchy matches Table~\ref{tab:instances} \\
 3 & Weight-ROM inference & Confirm that the 50{,}176-bit
-  \texttt{W1\_PACKED\_INIT} constant becomes block RAM. An indexed read of a
-  large constant can be inferred as LUT ROM instead, which would consume the
-  device.
-  & \texttt{report\_utilization} shows $\le 2$ RAMB36 for $W_1$ and no LUT
-  blow-up \\
+  \texttt{W1\_PACKED\_INIT} constant becomes block RAM. The read is now
+  registered, which is the form XST maps to RAM, but a wide constant indexed by
+  a signal can still be inferred as LUT ROM, which would consume the device.
+  & \texttt{map} report shows $\le 2$ RAMB36 for $W_1$ and no LUT blow-up \\
 4 & Area & Post-synthesis utilisation, compared with
   Table~\ref{tab:resources}. Replace the estimates with measured counts.
   & LUT, FF and BRAM within the device; report updated \\
-5 & Timing & \texttt{report\_timing\_summary} at 100\,MHz. If the accumulator
+5 & Timing & \texttt{trce} against the 10\,ns period. If the accumulator
   feedback path misses, pipeline the adder or the rotation output.
   & WNS $\ge 0$ and WHS $\ge 0$ at a 10\,ns period \\
-6 & Implementation and power & \texttt{opt\_design}, \texttt{place\_design},
-  \texttt{route\_design}, \texttt{report\_power}.
+6 & Implementation and power & \texttt{map}, \texttt{par} and XPower.
   & Routed design, DRC clean, no unrouted nets; power report archived \\
-7 & Bitstream and bring-up & \texttt{write\_bitstream}, program over JTAG.
+7 & Bitstream and bring-up & \texttt{bitgen}, then program over JTAG with
+  iMPACT.
   & Board enumerates; display shows 0 after reset \\
 8 & On-board accuracy & Stream the same 2{,}000 verification images over the
   real UART and log the predicted digits.
@@ -2519,10 +2572,18 @@ an exit criterion, so progress is checkable rather than a matter of opinion.
 
 The design reads one 64-bit word per input from a 50{,}176-bit constant array
 that is indexed by a signal, not by a constant. Synthesis has two choices: infer
-a ROM (correct, one or two BRAMs) or replicate the constant into LUT-based
+a ROM (correct, two BRAM36 blocks) or replicate the constant into LUT-based
 multiplexers (incorrect for the budget, potentially tens of thousands of LUTs).
-The difference between one or two BRAM blocks and tens of thousands of LUTs is
-an order of magnitude of area, so task~3 is not a formality.
+The difference between two BRAM blocks and tens of thousands of LUTs is an order
+of magnitude of area, so task~3 is not a formality.
+
+The earlier version made the second outcome unavoidable: it read the array
+combinationally, and block RAM has a synchronous read, so a combinational read
+of a 50{,}176-bit constant cannot be a RAM at all. The read is now registered ---
+address in, data out on the next cycle --- and the MAC engine spends one extra
+cycle priming address~0 to absorb the change. That is the form XST maps to RAM,
+but inference is a tool decision rather than a language guarantee, so the check
+remains on the roadmap.
 
 If the constant does become LUT ROM, the fix is mechanical and does not change
 the arithmetic: emit $W_1$ as a \texttt{.mem} file of 784 lines of 16 hex digits,
@@ -2564,16 +2625,14 @@ after synthesis.
       fixed at 32 in \texttt{NumberRecognition} and in the generated package.
       The lower blocks are fully generic, but changing the width requires
       re-exporting the weights; it is a rebuild, not a generic map.
-  \item \textbf{The board and the part do not yet agree.} The design is
-      described for a Digilent Nexys 3, and this report quotes the Spartan-6
-      XC6SLX16 budget throughout, but the repository also ships a Vivado flow
-      aimed at an Artix-7 XC7A100T while the constraint file targets Spartan-6
-      pins. Task~0 of the roadmap closes this by choosing one board and one
-      part. Every device-dependent
-      figure in this report is stated against the smaller Spartan-6 budget ---
-      15{,}850 LUTs and 16 BRAM36 equivalents --- because that is the
-      conservative choice and the part the constraints target; the Artix-7
-      figures are 63{,}400 LUTs and 135 BRAM36.
+  \item \textbf{Board and part are now consistent.} The design targets a
+      Digilent Nexys~3, part XC6SLX16-CSG324-2, and this report quotes that
+      device's budget throughout: 9{,}112 LUTs, 18{,}224 flip-flops, 32 BRAM18
+      blocks and 32 DSP48A1 slices. The repository ships one flow
+      (\texttt{scripts/ise\_build.tcl}) and one constraint file
+      (\texttt{constraints/Nexys3Top.ucf}), both for that part. The Artix-7
+      XC7A100T figures --- 63{,}400 LUTs and 135 BRAM36 --- are retained only
+      as the comparison point in the device discussion.
 \end{enumerate}
 \section{Conclusion}
 
@@ -2581,7 +2640,7 @@ A multiplier-free ternary network for handwritten digit recognition has been
 designed for the Nexys~3 and verified bit-exact against its software reference
 over 2{,}000 images in RTL simulation. The $784 \rightarrow 32 \rightarrow 10$ design performs
 25{,}088 first-layer multiply operations using zero multipliers, stores its
-weights in 6.9 KiB of packed constants, and classifies in 15.7\,\textmu s at 100\,MHz.
+weights in 6.9 KiB of packed constants, and classifies in 16.1\,\textmu s at 100\,MHz.
 
 Against a classical float reference it needs 8$\times$ fewer multiply-accumulate
 operations and 259$\times$ fewer cycles, is 115$\times$ smaller in the bytes it

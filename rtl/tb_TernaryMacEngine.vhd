@@ -35,7 +35,8 @@ architecture simulation of tb_TernaryMacEngine is
 
   -- Declared before the constant below, which calls it. Packed words are read as
   -- hex because a full 32-bit packed word overflows a VHDL integer.
-  function read_weights return weight_array is
+  -- impure because it opens a file; a pure function may not touch a file object
+  impure function read_weights return weight_array is
     variable table : weight_array := (others => (others => '0'));
     variable row    : line;
     variable word   : std_logic_vector(N_HIDDEN * 2 - 1 downto 0);
@@ -51,7 +52,7 @@ architecture simulation of tb_TernaryMacEngine is
     return table;
   end function read_weights;
 
-  function read_bias return std_logic_vector is
+  impure function read_bias return std_logic_vector is
     variable table : std_logic_vector(N_HIDDEN * ACC_WIDTH - 1 downto 0) := (others => '0');
     variable row    : line;
     variable value  : std_logic_vector(ACC_WIDTH - 1 downto 0);
@@ -75,12 +76,31 @@ architecture simulation of tb_TernaryMacEngine is
   signal busy   : std_logic;
   signal done   : std_logic;
   signal waddr  : std_logic_vector(ADDR_WIDTH - 1 downto 0);
-  signal x      : std_logic_vector(N_INPUTS * X_WIDTH - 1 downto 0);
+  signal x_addr : std_logic_vector(ADDR_WIDTH - 1 downto 0);
   signal hidden : std_logic_vector(N_HIDDEN * HIDDEN_WIDTH - 1 downto 0);
   signal bias_s : std_logic_vector(N_HIDDEN * ACC_WIDTH - 1 downto 0) := BIAS;
   signal w_data : std_logic_vector(N_HIDDEN * 2 - 1 downto 0) := (others => '0');
+
+  -- Stands in for the rotation memory: the engine addresses one activation per
+  -- cycle and gets it combinationally, exactly as the real RAM does.
+  type act_mem_t is array (0 to N_INPUTS - 1) of std_logic_vector(X_WIDTH - 1 downto 0);
+  signal act_mem : act_mem_t := (others => (others => '0'));
+  signal x_value : std_logic_vector(X_WIDTH - 1 downto 0) := (others => '0');
 begin
   clk <= not clk after CLOCK_PERIOD / 2;
+
+  x_value <= act_mem(to_integer(unsigned(x_addr)));
+
+  -- Synchronous weight ROM. The engine's contract is that the word for the
+  -- address it presents arrives on the NEXT cycle, which is what lets the real
+  -- table be block RAM instead of a 784:1 LUT multiplexer. Modelling it
+  -- combinationally here would hide a misalignment the hardware would have.
+  weight_rom : process(clk)
+  begin
+    if rising_edge(clk) then
+      w_data <= WEIGHTS(to_integer(unsigned(waddr)));
+    end if;
+  end process;
 
   dut : entity work.TernaryMacEngine
     generic map (
@@ -102,7 +122,8 @@ begin
       done        => done,
       w_read_addr => waddr,
       w_read_data => w_data,
-      x           => x,
+      x_addr      => x_addr,
+      x_value     => x_value,
       hidden      => hidden
     );
 
@@ -137,8 +158,7 @@ begin
       end loop;
 
       for i in 0 to N_INPUTS - 1 loop
-        x((i + 1) * X_WIDTH - 1 downto i * X_WIDTH)
-          <= std_logic_vector(to_signed(values(i), X_WIDTH));
+        act_mem(i) <= std_logic_vector(to_signed(values(i), X_WIDTH));
       end loop;
 
       wait for 1 ns;
@@ -146,12 +166,9 @@ begin
       wait until rising_edge(clk);
       start <= '0';
 
-      for i in 0 to N_INPUTS - 1 loop
-        w_data <= WEIGHTS(i);
-        wait until rising_edge(clk);
-      end loop;
+      -- The engine runs N_INPUTS + 2 cycles and pulses done for one cycle.
+      wait until done = '1' for 20 us;
 
-      wait until rising_edge(clk);
       wait until rising_edge(clk);
 
       for h in 0 to N_HIDDEN - 1 loop

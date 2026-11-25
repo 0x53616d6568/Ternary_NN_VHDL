@@ -5,9 +5,20 @@
 -- NeuronLayer -> TernaryNeuron -> {TernaryApply, Accumulator, Saturate}.
 --
 -- Why a fully parallel layer is not an option: 784 x 32 products would need
--- 26,138 adders, roughly 418,000 LUTs, against the Artix-7's 15,850. Streaming
--- one input per cycle needs N_HIDDEN accumulators and one adder each. The
--- trade is 784 cycles of latency for a design that fits at all.
+-- 25,088 adders, roughly 150,000 LUTs, against the 9,112 LUTs of a Spartan-6
+-- XC6SLX16. Streaming one input per cycle needs N_HIDDEN accumulators and one
+-- adder each. The trade is 784 cycles of latency for a design that fits at all.
+--
+-- MEMORY INTERFACES. Both operands are read from memories rather than from wide
+-- buses:
+--
+--   * weights: `w_read_addr` out, `w_read_data` in, SYNCHRONOUS (the word for
+--     address a is valid on the cycle after a is presented). That is what lets
+--     the 784 x 64-bit weight table become one block RAM instead of a 784:1
+--     multiplexer built from LUTs. The engine therefore spends one cycle
+--     priming address 0 before it can consume the first word.
+--   * activations: `x_addr` out, `x_value` in, asynchronous, so the rotated
+--     value is available in the same cycle as the index.
 --
 -- Dataflow, across the whole engine:
 --
@@ -43,7 +54,8 @@ entity TernaryMacEngine is
     done         : out std_logic;
     w_read_addr  : out std_logic_vector(ADDR_WIDTH - 1 downto 0);
     w_read_data  : in  std_logic_vector(N_HIDDEN * 2 - 1 downto 0);
-    x            : in  std_logic_vector(N_INPUTS * X_WIDTH - 1 downto 0);
+    x_addr       : out std_logic_vector(ADDR_WIDTH - 1 downto 0);
+    x_value      : in  std_logic_vector(X_WIDTH - 1 downto 0);
     hidden       : out std_logic_vector(N_HIDDEN * HIDDEN_WIDTH - 1 downto 0)
   );
 end TernaryMacEngine;
@@ -58,18 +70,31 @@ architecture rtl of TernaryMacEngine is
   signal finished  : std_logic := '0';
   signal final_cyc : std_logic;
   signal x_now     : std_logic_vector(X_WIDTH - 1 downto 0);
-begin
-  -- The address generator walks the INPUTS 0..N_INPUTS-1, not the weights.
-  -- That is why ADDR_WIDTH stays at 10 bits regardless of N_HIDDEN: it was
-  -- already wide enough for 784 entries at either width.
-  w_read_addr <= std_logic_vector(to_unsigned(index, ADDR_WIDTH));
 
-  -- Combinational read of the current input from the rotated bus.
-  x_now <= x(index * X_WIDTH + X_WIDTH - 1 downto index * X_WIDTH);
+  -- primed = '0' means the ROM address has been presented but its data has not
+  -- arrived yet. The accumulator is fed a zero activation during that cycle, so
+  -- it adds nothing and the bias loaded on `start` survives untouched.
+  signal primed    : std_logic := '0';
+  signal addr_sel  : integer range 0 to N_INPUTS - 1 := 0;
+begin
+  -- Address generator. While priming, address 0 is presented. Afterwards the
+  -- ROM is read one step ahead of the accumulator, so the word arriving now
+  -- belongs to the input being consumed now. The last address is clamped
+  -- because the lookahead would otherwise run off the end of the table; the
+  -- word fetched there is never used.
+  addr_sel <= 0                          when primed = '0' else
+              N_INPUTS - 1               when index = N_INPUTS - 1 else
+              index + 1;
+
+  w_read_addr <= std_logic_vector(to_unsigned(addr_sel, ADDR_WIDTH));
+  x_addr      <= std_logic_vector(to_unsigned(index, ADDR_WIDTH));
+
+  -- The activation is zero until the first weight word has arrived.
+  x_now <= (others => '0') when primed = '0' else x_value;
 
   -- '1' on the cycle that consumes the last input, which is the only cycle on
   -- which the ReLU and saturation may be applied.
-  final_cyc <= '1' when index = N_INPUTS - 1 else '0';
+  final_cyc <= '1' when primed = '1' and index = N_INPUTS - 1 else '0';
 
   layer : entity work.NeuronLayer
     generic map (
@@ -89,7 +114,8 @@ begin
       Hidden     => hidden
     );
 
-  -- The sequencer. Load the bias on start, then one input per cycle.
+  -- The sequencer. Load the bias on start, prime the ROM, then one input per
+  -- cycle. Total latency is N_INPUTS + 2 cycles.
   process(clk)
   begin
     if rising_edge(clk) then
@@ -97,10 +123,14 @@ begin
 
       if start = '1' then
         index  <= 0;
+        primed <= '0';
         active <= '1';
       elsif active = '1' then
-        if index = N_INPUTS - 1 then
+        if primed = '0' then
+          primed <= '1';
+        elsif index = N_INPUTS - 1 then
           index    <= 0;
+          primed   <= '0';
           active   <= '0';
           finished <= '1';
         else

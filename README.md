@@ -11,10 +11,10 @@ its PyTorch source model.
 | **Weight density** | **1.122 bits/weight** (0.926 in W1 alone) |
 | **Weight constants** | 56,640 bit (6.9 KiB) in the deployed package |
 | **Zero density (W1)** | 65.86% |
-| **Multipliers** | **0** |
+| **Multipliers** | **0** in the ternary layer (10 in the output layer) |
 | **Parameters** | 25,450 — 25,088 ternary weights in W1, 330 values in W2/B2 at 16 bits, 32 B1 biases |
-| **Latency** | ~1,568 cycles ≈ 15.7 µs @ 100 MHz (784 rotation + 784 MAC) |
-| **Target** | Digilent Nexys 3 (Spartan-6 XC6SLX16, 15,850 LUTs) — the board and the part still disagree; see roadmap task 0 in the report |
+| **Latency** | 1,606 cycles ≈ 16.1 µs @ 100 MHz (784 rotation + 786 MAC + 32 output layer) |
+| **Target** | Digilent Nexys 3 (Spartan-6 XC6SLX16-CSG324-2: 9,112 LUTs, 18,224 FFs, 32 DSP48A1, 32 BRAM18) — one ISE flow, one UCF |
 
 Deployed checkpoint `model/mnist_h32mild.pt`; `rtl/ModelWeights.vhd`
 SHA-256 `8F3F8D0E0C47B8FA2AC3BB09591F4A6F3779FEB7674C5BCC76F30F751C53A6C1`.
@@ -31,10 +31,10 @@ hidden layer of 256 units. Its recorded validation accuracy is 98.24%.
 | **Multipliers** | 203,530 | **0** | **0** | — |
 | MACs per image | 203,264 | 12,704 | 25,408 | 8.0x |
 | MAC cycles at 100 MHz | 203,264 | 784 | **784** | 259x |
-| End-to-end latency | 2.033 ms* | -- | **15.7 us** | 129x |
+| End-to-end latency | 2.033 ms* | -- | **16.1 us** | 127x |
 | Weight storage (information) | 6,512,960 bit | 15,121 bit | 28,515 bit | **228x** |
 | Weight storage (encoded) | 6,512,960 bit | 28,480 bit | 56,640 bit | **115x** |
-| BRAM36 for weights | 177 | 0.8 | 1.5 | **118x** |
+| BRAM36 for weights | 177 | 1 | 2 | **89x** |
 | Entropy per weight | 32.0 bit | 1.189 bit | **1.122 bit** | 28.5x |
 | MNIST test | **98.05%** | 94.19% | 94.61% | -3.4 pts |
 | Hand-drawn | 80.5% | 74.8% | **84.8%** | **+4.3** |
@@ -47,8 +47,8 @@ latency and energy, and on hand-drawn input it is the better classifier.
 \* analytical: one MAC per cycle, since float products are not shared across
 units. Every other figure in the table is measured. The ternary engine applies
 one input to all 32 lanes per cycle, so its 25,408 MACs cost 784 cycles; the
-15.7 us is the measured end-to-end compute time in co-simulation, including the
-rotation pipeline (17.8 us through the UART framer).
+16.1 us is the measured end-to-end compute time in co-simulation, including the
+rotation and the serialised output layer (18.2 us through the UART framer).
 
 ---
 
@@ -100,7 +100,8 @@ Testbenches: `tb_NumberRecognition` (end-to-end), `tb_WalshHadamard`,
 
 - `test_gui_pipeline.py` — 19-test GUI regression suite
 - `model/mnist_h32mild.pt` — **the deployed checkpoint** (94.26% val)
-- `scripts/vivado_synth.tcl` — unrun synthesis script
+- `scripts/ise_build.tcl` — ISE 14.7 build flow (synthesis, map, par, bitgen)
+- `scripts/validate.py` — one-command static + simulation validator
 - `constraints/Nexys3Top.ucf` — pin constraints
 - `docs/report.tex`, `docs/report.pdf` — full project report
 - `docs/measured_figures.json` — measured numbers behind the report
@@ -273,21 +274,22 @@ digits:
 
 ## 4. Known limitations
 
-**The design has not been synthesised.** No synthesis tool was available in the
-development environment, so every resource figure in the report is a
+**The design has not been synthesised.** No ISE installation was available in
+the development environment, so every resource figure in the report is a
 hand-derived estimate rather than a tool result.
 
-Two questions remain open and require a Vivado or Quartus run:
+Two questions remain open and require an ISE 14.7 run:
 
-1. **DSP inference.** The second layer performs 320 genuine multiplications and
-   the device provides 90 DSP slices. Because the hidden operand is narrow, LUT
-   implementation is expected, but this is not confirmed. If DSPs are inferred,
-   the remedy is to ternarise the second layer, at a direct accuracy cost.
-2. **Timing closure.** The combinational second layer and the indexed package
-   read form the longest combinational paths and have not been analysed against
-   the 100 MHz target.
+1. **DSP inference.** The output layer performs 320 genuine multiplications per
+   image and the device provides 32 DSP48A1 slices. It is walked one input per
+   cycle, so it needs ten multipliers at a time, which should map to ten DSPs;
+   this is not yet confirmed. If the tools instead build them from LUTs, the
+   remedy is to ternarise the second layer, at a direct accuracy cost.
+2. **Timing closure.** The 32-bit accumulator feedback and the ten parallel
+   multipliers form the longest paths and have not been analysed against the
+   100 MHz target.
 
-A ready-to-run script is in `scripts/vivado_synth.tcl`.
+A ready-to-run script is in `scripts/ise_build.tcl`.
 
 **Rotation test coverage.** `tb_WalshHadamard` has `N_IMAGES` hard-coded to 4,
 so the rotation is proven over 3,136 values rather than the full 2,000-image
@@ -298,9 +300,9 @@ set. The coverage is narrower than the end-to-end figure.
 ## 5. Design note
 
 The first layer is sequential rather than parallel for a concrete reason. A
-fully parallel 784 × 32 array needs roughly 50,000 LUTs; the Artix-7 provides
-15,850. Streaming one input per cycle needs about 300 LUTs and moves the weights
-into two BRAM36 blocks (784 × 64 bits, two bits per weight).
+fully parallel 784 × 32 array needs roughly 50,000 LUTs; the Spartan-6 XC6SLX16
+provides 9,112. Streaming one input per cycle needs about 1,350 LUTs and moves
+the weights into two BRAM36 blocks (784 × 64 bits, two bits per weight).
 
 The multiply is written as an explicit conditional add or subtract rather than
 an infix `*`, so synthesis infers an adder and never reaches for a DSP. Two-bit
